@@ -1,0 +1,86 @@
+# ====================================================================
+# ANYPAD PS5 UNIVERSAL — .gitignore DE SEGURANÇA E BASTIDORES
+# ====================================================================
+
+# 1. Compilação, Binários e Artefatos ELF
+build/
+dist/
+*.elf
+*.o
+*.obj
+*.exe
+*.a
+*.so
+*.sprx
+*.prx
+tests/test_flow_sim*
+tests/test_pad_struct*
+tests/test_parsers*
+tests/test_vpad_abi*
+
+# 2. Ambientes Virtuais e Scripts Auxiliares
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+
+# 3. Variáveis de Ambiente e Segredos Sensíveis
+.env
+.env.local
+*.key
+*.pem
+*.secret
+
+# 4. Agentes de IA, Configurações de IDE e Metadados Internos
+.vscode/
+.idea/
+.agents/
+.ai/
+AGENTS.md
+.system_generated/
+.gemini/
+
+# 5. Auditorias Internas, Rascunhos e Bastidores
+docs/AUDIT_CHECKLIST.md
+docs/AUDITORIA_E_BUGS.md
+docs/ARCHITECTURE_STANDARDS.md
+AUDITORIA_E_BUGS.md
+docs/interview_pitch.md
+.ai/memory/project_chronicle_and_video_guide.md
+*pitch*
+*interview*
+*video_guide*
+*teleprompt*
+*slide*
+notes/
+anotacoes/
+rascunhos/
+*.draft.md
+
+# 6. Mídias e Gravações de Vídeo/Áudio Brutas
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.mp3
+*.wav
+
+# 7. Sistema Operacional e Arquivos Temporários
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+*.orig
+
+# 8. Logs e Saídas de Depuração
+*.log
+*.txt.out
+scratch/
+temp/
+tmp/
