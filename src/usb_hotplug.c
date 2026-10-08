@@ -2,6 +2,7 @@
 #include "usb_controllers.h"
 #include "ps5_vpad.h"
 #include "log.h"
+#include "usb_lifecycle.h"
 #include "util.h"
 
 #include <stdio.h>
@@ -31,15 +32,15 @@ typedef struct {
     usb_controller_type_t type;
     const char           *name;
     pad_conn_type_t       conn_type;
-    pthread_t             thread;
-    volatile int          stop_thread;
+    usb_lifecycle_t       lifecycle;
+    int                   stop_thread;
+    int                   use_fs;
 
 #ifdef __PROSPERO__
     struct usb_fs_endpoint endpoints[4];
     uint8_t               in_index;
     uint8_t               out_index;
     int                   has_out;
-    int                   use_fs;
     void                 *fs_frame[4];
     uint32_t              fs_len[4];
     uint8_t               rx_buf[64];
@@ -52,11 +53,65 @@ typedef struct {
 typedef struct {
     usb_slot_device_t devices[MAX_SLOTS];
     long              last_scan_time;
+    int               initialized;
+    int               shutting_down;
     pthread_mutex_t   lock;
 } usb_hotplug_state_t;
 
-static usb_hotplug_state_t g_usb_hotplug;
+static usb_hotplug_state_t g_usb_hotplug = {
+    .lock = PTHREAD_MUTEX_INITIALIZER
+};
+static pthread_mutex_t g_usb_operation_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t s_last_seen[6][21] = {{0}};
+
+static void reset_device(usb_slot_device_t *sdev)
+{
+    memset(sdev, 0, sizeof(*sdev));
+    sdev->slot = -1;
+    sdev->fd = -1;
+#ifndef __PROSPERO__
+    for (int i = 0; i < 6; i++) sdev->ep_fd[i] = -1;
+#endif
+}
+
+static void close_device_resources(usb_slot_device_t *sdev)
+{
+#ifdef __PROSPERO__
+    if (sdev->use_fs && sdev->fd >= 0) {
+        struct usb_fs_uninit uninit;
+        memset(&uninit, 0, sizeof(uninit));
+        ioctl(sdev->fd, USB_FS_UNINIT, &uninit);
+        sdev->use_fs = 0;
+    }
+#else
+    for (int i = 0; i < 6; i++) {
+        if (sdev->ep_fd[i] >= 0) {
+            close(sdev->ep_fd[i]);
+            sdev->ep_fd[i] = -1;
+        }
+    }
+#endif
+    if (sdev->fd >= 0) {
+        close(sdev->fd);
+        sdev->fd = -1;
+    }
+}
+
+static int worker_stop_requested(usb_slot_device_t *dev)
+{
+    int stop;
+    pthread_mutex_lock(&g_usb_hotplug.lock);
+    stop = dev->stop_thread;
+    pthread_mutex_unlock(&g_usb_hotplug.lock);
+    return stop;
+}
+
+static void request_worker_stop(usb_slot_device_t *dev)
+{
+    pthread_mutex_lock(&g_usb_hotplug.lock);
+    dev->stop_thread = 1;
+    pthread_mutex_unlock(&g_usb_hotplug.lock);
+}
 
 #ifdef __PROSPERO__
 
@@ -155,6 +210,7 @@ static int usb_fs_setup_device(usb_slot_device_t *sdev)
         }
         return 0;
     }
+    sdev->use_fs = 1;
 
     sdev->in_index = 0;
     struct usb_fs_open open_in;
@@ -210,7 +266,6 @@ static int usb_fs_setup_device(usb_slot_device_t *sdev)
     sdev->endpoints[1].nFrames = 1;
     sdev->endpoints[1].flags = USB_FS_FLAG_SINGLE_SHORT_OK;
 
-    sdev->use_fs = 1;
     log_line("usb_hotplug: %s claimed via USB_FS (IN=0x%02x, OUT=0x%02x)",
              sdev->name, in_addr, out_addr);
     return 1;
@@ -327,7 +382,9 @@ static void *usb_reader_worker(void *arg)
     pad_state_t st;
     
     long last_data_time = now_ms();
+#ifdef __PROSPERO__
     long last_led_time = 0;
+#endif
     long last_log_t = 0;
     int consecutive_errors = 0;
 
@@ -353,7 +410,7 @@ static void *usb_reader_worker(void *arg)
     }
 #endif
 
-    while (!dev->stop_thread) {
+    while (!worker_stop_requested(dev)) {
         long cur_time = now_ms();
 
 #ifdef __PROSPERO__
@@ -420,7 +477,7 @@ static void *usb_reader_worker(void *arg)
             if (consecutive_errors >= 50) {
                 log_line("usb_hotplug: slot %d disconnected (read error n=%d, errs=%d) — terminating reader",
                          dev->slot, n, consecutive_errors);
-                dev->stop_thread = 1;
+                request_worker_stop(dev);
                 break;
             }
         } else if (cur_time - last_data_time > 3000 && cur_time - last_log_t > 3000) {
@@ -438,20 +495,65 @@ static void *usb_reader_worker(void *arg)
 
         usleep(4000); /* ~250 Hz polling tick */
     }
-
-
-#ifdef __PROSPERO__
-    if (dev->use_fs && dev->fd >= 0) {
-        struct usb_fs_uninit uninit;
-        memset(&uninit, 0, sizeof(uninit));
-        ioctl(dev->fd, USB_FS_UNINIT, &uninit);
-        dev->use_fs = 0;
-    }
-#endif
-
     log_line("usb_hotplug: Reader thread stopped for slot %d", dev->slot);
     return NULL;
 }
+
+static int usb_lifecycle_setup_io(void *context)
+{
+    usb_slot_device_t *sdev = (usb_slot_device_t *)context;
+#ifdef __PROSPERO__
+    return usb_fs_setup_device(sdev) ? 0 : EIO;
+#else
+    for (int ep = 1; ep <= 6; ep++) {
+        char ep_path[40];
+        snprintf(ep_path, sizeof(ep_path), "%s.%d", sdev->dev_path, ep);
+        sdev->ep_fd[ep - 1] = open(ep_path, O_RDONLY | O_NONBLOCK);
+    }
+    return 0;
+#endif
+}
+
+static int usb_lifecycle_reserve_slot(void *context)
+{
+    usb_slot_device_t *sdev = (usb_slot_device_t *)context;
+    return vpad_add(sdev->slot, sdev->conn_type, sdev->name) ? 0 : ENOSPC;
+}
+
+static int usb_lifecycle_create_thread(void *context, pthread_t *thread,
+                                       const pthread_attr_t *attributes,
+                                       void *(*worker)(void *), void *argument)
+{
+    (void)context;
+    return pthread_create(thread, attributes, worker, argument);
+}
+
+static int usb_lifecycle_join_thread(void *context, pthread_t thread,
+                                     void **result)
+{
+    (void)context;
+    return pthread_join(thread, result);
+}
+
+static void usb_lifecycle_release_slot(void *context)
+{
+    usb_slot_device_t *sdev = (usb_slot_device_t *)context;
+    vpad_remove(sdev->slot);
+}
+
+static void usb_lifecycle_release_io(void *context)
+{
+    close_device_resources((usb_slot_device_t *)context);
+}
+
+static const usb_lifecycle_ops_t USB_LIFECYCLE_OPS = {
+    usb_lifecycle_setup_io,
+    usb_lifecycle_reserve_slot,
+    usb_lifecycle_create_thread,
+    usb_lifecycle_join_thread,
+    usb_lifecycle_release_slot,
+    usb_lifecycle_release_io
+};
 
 static int is_device_claimed(const char *path)
 {
@@ -581,7 +683,7 @@ static void probe_usb_devices(void)
             usb_init_controller_handshake(fd, ctype);
 
             usb_slot_device_t *sdev = &g_usb_hotplug.devices[slot];
-            memset(sdev, 0, sizeof(usb_slot_device_t));
+            reset_device(sdev);
             sdev->active = 1;
             sdev->slot = slot;
             sdev->fd = fd;
@@ -592,20 +694,6 @@ static void probe_usb_devices(void)
             sdev->name = ctrl_name;
             sdev->stop_thread = 0;
 
-#ifdef __PROSPERO__
-            if (!usb_fs_setup_device(sdev)) {
-                log_line("usb_hotplug: Failed to setup usb_fs for %s, closing", path);
-                close(fd);
-                memset(sdev, 0, sizeof(usb_slot_device_t));
-                continue;
-            }
-#else
-            for (int ep = 1; ep <= 6; ep++) {
-                char ep_path[40];
-                snprintf(ep_path, sizeof(ep_path), "%s.%d", path, ep);
-                sdev->ep_fd[ep - 1] = open(ep_path, O_RDONLY | O_NONBLOCK);
-            }
-#endif
             int is_dongle = (vid == 0x045e && pid == 0x0719) ||
                             (vid == 0x045e && (pid == 0x02e6 || pid == 0x02fe)) ||
                             (vid == 0x1a34) ||
@@ -616,80 +704,108 @@ static void probe_usb_devices(void)
                                            strstr(ctrl_name, "Receiver") != NULL));
             sdev->conn_type = is_dongle ? CONN_USB_DONGLE_24G : CONN_USB_WIRED;
 
-            vpad_add(slot, sdev->conn_type, ctrl_name);
-            pthread_create(&sdev->thread, NULL, usb_reader_worker, sdev);
+            int thread_error = usb_lifecycle_start(
+                &sdev->lifecycle, &USB_LIFECYCLE_OPS, sdev,
+                usb_reader_worker, sdev);
+            if (thread_error != 0) {
+                log_line("usb_hotplug: Device lifecycle startup failed for %s (error=%d)",
+                         path, thread_error);
+                reset_device(sdev);
+                continue;
+            }
         }
     }
 }
 
 int usb_hotplug_init(void)
 {
-    memset(&g_usb_hotplug, 0, sizeof(g_usb_hotplug));
-    pthread_mutex_init(&g_usb_hotplug.lock, NULL);
+    pthread_mutex_lock(&g_usb_operation_lock);
+    pthread_mutex_lock(&g_usb_hotplug.lock);
+    if (g_usb_hotplug.initialized && g_usb_hotplug.shutting_down) {
+        pthread_mutex_unlock(&g_usb_hotplug.lock);
+        pthread_mutex_unlock(&g_usb_operation_lock);
+        return 0;
+    }
+    if (!g_usb_hotplug.initialized) {
+        for (int i = 0; i < MAX_SLOTS; i++) reset_device(&g_usb_hotplug.devices[i]);
+        memset(s_last_seen, 0, sizeof(s_last_seen));
+        g_usb_hotplug.last_scan_time = 0;
+        g_usb_hotplug.initialized = 1;
+    }
+    g_usb_hotplug.shutting_down = 0;
+    pthread_mutex_unlock(&g_usb_hotplug.lock);
+    pthread_mutex_unlock(&g_usb_operation_lock);
     log_line("usb_hotplug: Initialized USB hotplug manager");
     return 1;
 }
 
 void usb_hotplug_poll(long now)
 {
-    /* Scan every 1500 ms */
-    if (now - g_usb_hotplug.last_scan_time < 1500) return;
-    g_usb_hotplug.last_scan_time = now;
-
     int dead[MAX_SLOTS];
     int n_dead = 0;
 
+    pthread_mutex_lock(&g_usb_operation_lock);
     pthread_mutex_lock(&g_usb_hotplug.lock);
+    if (!g_usb_hotplug.initialized || g_usb_hotplug.shutting_down ||
+        now - g_usb_hotplug.last_scan_time < 1500) {
+        pthread_mutex_unlock(&g_usb_hotplug.lock);
+        pthread_mutex_unlock(&g_usb_operation_lock);
+        return;
+    }
+    g_usb_hotplug.last_scan_time = now;
+
     for (int i = 0; i < MAX_SLOTS; i++) {
-        if (g_usb_hotplug.devices[i].active) {
-            if (access(g_usb_hotplug.devices[i].dev_path, F_OK) != 0 ||
-                g_usb_hotplug.devices[i].stop_thread) {
-                log_line("usb_hotplug: Controller disconnected from %s (slot %d)",
-                         g_usb_hotplug.devices[i].dev_path, i);
-                g_usb_hotplug.devices[i].stop_thread = 1;
-                dead[n_dead++] = i;
-            }
+        if (g_usb_hotplug.devices[i].active &&
+            (access(g_usb_hotplug.devices[i].dev_path, F_OK) != 0 ||
+             g_usb_hotplug.devices[i].stop_thread)) {
+            log_line("usb_hotplug: Controller disconnected from %s (slot %d)",
+                     g_usb_hotplug.devices[i].dev_path, i);
+            g_usb_hotplug.devices[i].stop_thread = 1;
+            dead[n_dead++] = i;
         }
     }
     pthread_mutex_unlock(&g_usb_hotplug.lock);
 
-    /* Join and release resources WITHOUT holding the hotplug lock */
+    /* Joins happen without the mutex the workers use to observe stop requests. */
     for (int d = 0; d < n_dead; d++) {
         int i = dead[d];
-        pthread_join(g_usb_hotplug.devices[i].thread, NULL);
+        usb_slot_device_t *sdev = &g_usb_hotplug.devices[i];
+        int stop_error = usb_lifecycle_stop(&sdev->lifecycle,
+                                            &USB_LIFECYCLE_OPS, sdev);
+        if (stop_error != 0) {
+            log_line("usb_hotplug: Device cleanup failed for slot %d (error=%d)",
+                     i, stop_error);
+            continue;
+        }
 
         pthread_mutex_lock(&g_usb_hotplug.lock);
         int bus = 0, dev_idx = 0;
-        if (sscanf(g_usb_hotplug.devices[i].dev_path, "/dev/ugen%d.%d", &bus, &dev_idx) == 2) {
-            if (bus >= 0 && bus < 6 && dev_idx >= 0 && dev_idx < 21) {
-                s_last_seen[bus][dev_idx] = 0;
-            }
+        if (sscanf(sdev->dev_path, "/dev/ugen%d.%d", &bus, &dev_idx) == 2 &&
+            bus >= 0 && bus < 6 && dev_idx >= 0 && dev_idx < 21) {
+            s_last_seen[bus][dev_idx] = 0;
         }
-#ifndef __PROSPERO__
-        for (int e = 0; e < 6; e++) {
-            if (g_usb_hotplug.devices[i].ep_fd[e] >= 0) {
-                close(g_usb_hotplug.devices[i].ep_fd[e]);
-                g_usb_hotplug.devices[i].ep_fd[e] = -1;
-            }
-        }
-#endif
-        if (g_usb_hotplug.devices[i].fd >= 0) {
-            close(g_usb_hotplug.devices[i].fd);
-            g_usb_hotplug.devices[i].fd = -1;
-        }
-        vpad_remove(i);
-        memset(&g_usb_hotplug.devices[i], 0, sizeof(usb_slot_device_t));
+        reset_device(sdev);
         pthread_mutex_unlock(&g_usb_hotplug.lock);
     }
 
     pthread_mutex_lock(&g_usb_hotplug.lock);
-    probe_usb_devices();
+    if (g_usb_hotplug.initialized && !g_usb_hotplug.shutting_down) {
+        probe_usb_devices();
+    }
     pthread_mutex_unlock(&g_usb_hotplug.lock);
+    pthread_mutex_unlock(&g_usb_operation_lock);
 }
 
 void usb_hotplug_cleanup(void)
 {
+    pthread_mutex_lock(&g_usb_operation_lock);
     pthread_mutex_lock(&g_usb_hotplug.lock);
+    if (!g_usb_hotplug.initialized) {
+        pthread_mutex_unlock(&g_usb_hotplug.lock);
+        pthread_mutex_unlock(&g_usb_operation_lock);
+        return;
+    }
+    g_usb_hotplug.shutting_down = 1;
     for (int i = 0; i < MAX_SLOTS; i++) {
         if (g_usb_hotplug.devices[i].active) {
             g_usb_hotplug.devices[i].stop_thread = 1;
@@ -698,22 +814,30 @@ void usb_hotplug_cleanup(void)
     pthread_mutex_unlock(&g_usb_hotplug.lock);
 
     for (int i = 0; i < MAX_SLOTS; i++) {
-        if (g_usb_hotplug.devices[i].active) {
-            pthread_join(g_usb_hotplug.devices[i].thread, NULL);
-#ifndef __PROSPERO__
-            for (int e = 0; e < 6; e++) {
-                if (g_usb_hotplug.devices[i].ep_fd[e] >= 0) {
-                    close(g_usb_hotplug.devices[i].ep_fd[e]);
-                    g_usb_hotplug.devices[i].ep_fd[e] = -1;
-                }
-            }
-#endif
-            if (g_usb_hotplug.devices[i].fd >= 0) {
-                close(g_usb_hotplug.devices[i].fd);
-                g_usb_hotplug.devices[i].fd = -1;
-            }
-            vpad_remove(i);
-            memset(&g_usb_hotplug.devices[i], 0, sizeof(usb_slot_device_t));
+        usb_slot_device_t *sdev = &g_usb_hotplug.devices[i];
+        if (!sdev->active) continue;
+        int stop_error = usb_lifecycle_stop(&sdev->lifecycle,
+                                            &USB_LIFECYCLE_OPS, sdev);
+        if (stop_error != 0) {
+            log_line("usb_hotplug: Cleanup failed for slot %d (error=%d)",
+                     i, stop_error);
+            continue;
         }
+        pthread_mutex_lock(&g_usb_hotplug.lock);
+        reset_device(sdev);
+        pthread_mutex_unlock(&g_usb_hotplug.lock);
     }
+
+    pthread_mutex_lock(&g_usb_hotplug.lock);
+    int still_active = 0;
+    for (int i = 0; i < MAX_SLOTS; i++) {
+        if (g_usb_hotplug.devices[i].active) still_active = 1;
+    }
+    if (!still_active) {
+        g_usb_hotplug.initialized = 0;
+        g_usb_hotplug.shutting_down = 0;
+        g_usb_hotplug.last_scan_time = 0;
+    }
+    pthread_mutex_unlock(&g_usb_hotplug.lock);
+    pthread_mutex_unlock(&g_usb_operation_lock);
 }
