@@ -1,5 +1,6 @@
 #include "bt_host.h"
 #include "bt_hci_usb.h"
+#include "bt_packets.h"
 #include "ps5_vpad.h"
 #include "profiles.h"
 #include "log.h"
@@ -12,16 +13,6 @@
 #include <pthread.h>
 
 #define PADS_DB_PATH "/data/anypad/pads.db"
-
-typedef struct {
-    uint8_t  mac[6];
-    char     name[64];
-    uint16_t vid, pid;
-    uint16_t acl_handle;
-    int      slot;
-    int      connected;
-    long     last_seen;
-} bt_device_t;
 
 typedef struct {
     int         pairing_active;
@@ -71,13 +62,24 @@ void bt_host_start_pairing(int duration_sec)
 
 int bt_host_is_pairing(void)
 {
-    return g_host.pairing_active;
+    int active;
+    pthread_mutex_lock(&g_host.lock);
+    active = g_host.pairing_active;
+    pthread_mutex_unlock(&g_host.lock);
+    return active;
 }
 
 int bt_host_get_pairing_seconds_left(void)
 {
-    if (!g_host.pairing_active) return 0;
-    long diff = g_host.pairing_end_time - now_ms();
+    long end_time;
+    pthread_mutex_lock(&g_host.lock);
+    if (!g_host.pairing_active) {
+        pthread_mutex_unlock(&g_host.lock);
+        return 0;
+    }
+    end_time = g_host.pairing_end_time;
+    pthread_mutex_unlock(&g_host.lock);
+    long diff = end_time - now_ms();
     return diff > 0 ? (int)(diff / 1000L) : 0;
 }
 
@@ -111,10 +113,11 @@ void bt_host_poll(long now)
     bt_hci_poll();
 
     /* Process pairing timeout */
-    if (g_host.pairing_active && now >= g_host.pairing_end_time) {
-        pthread_mutex_lock(&g_host.lock);
-        g_host.pairing_active = 0;
-        pthread_mutex_unlock(&g_host.lock);
+    pthread_mutex_lock(&g_host.lock);
+    int pairing_expired = g_host.pairing_active && now >= g_host.pairing_end_time;
+    if (pairing_expired) g_host.pairing_active = 0;
+    pthread_mutex_unlock(&g_host.lock);
+    if (pairing_expired) {
         /* Cancel Inquiry */
         bt_hci_send_cmd(0x0002, 0x01, NULL, 0);
         log_line("bt_host: pairing window closed");
@@ -125,14 +128,16 @@ void bt_host_poll(long now)
     uint8_t ev[HCI_PKT_MAX];
     int len;
     while ((len = bt_hci_recv_event(ev, sizeof(ev))) > 0) {
+        if (len < 2) continue;
         uint8_t ev_code = ev[0];
         uint8_t param_len = ev[1];
+        if ((size_t)param_len != (size_t)(len - 2)) continue;
         const uint8_t *param = ev + 2;
 
         /* Inquiry Result or Extended Inquiry Result */
         if (ev_code == 0x02 || ev_code == 0x2F) {
             /* Look for gamepad device and initiate connection if pairing */
-            if (g_host.pairing_active && param_len >= 14) {
+            if (bt_host_is_pairing() && param_len >= 14) {
                 const uint8_t *mac = param + 1;
                 log_line("bt_host: discovered device %02x:%02x:%02x:%02x:%02x:%02x",
                          mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
@@ -150,15 +155,21 @@ void bt_host_poll(long now)
         else if (ev_code == 0x05 && param_len >= 4) {
             uint16_t handle = (uint16_t)(param[1] | (param[2] << 8));
             log_line("bt_host: device disconnected (handle 0x%04x)", handle);
+            int disconnected_slot = -1;
+            pthread_mutex_lock(&g_host.lock);
             for (int i = 0; i < MAX_SLOTS; i++) {
                 if (g_host.devices[i].acl_handle == handle) {
                     if (g_host.devices[i].slot >= 0) {
-                        vpad_remove(g_host.devices[i].slot);
+                        disconnected_slot = g_host.devices[i].slot;
                     }
                     g_host.devices[i].connected = 0;
                     g_host.devices[i].slot = -1;
                     break;
                 }
+            }
+            pthread_mutex_unlock(&g_host.lock);
+            if (disconnected_slot >= 0 && disconnected_slot < MAX_SLOTS) {
+                vpad_remove(disconnected_slot);
             }
         }
     }
@@ -166,36 +177,32 @@ void bt_host_poll(long now)
     /* Process ACL input data */
     uint8_t acl[HCI_PKT_MAX];
     while ((len = bt_hci_recv_acl(acl, sizeof(acl))) > 0) {
-        if (len < 8) continue;
-        uint16_t handle = (uint16_t)((acl[0] | (acl[1] << 8)) & 0x0FFF);
-        uint16_t l2cap_len = (uint16_t)(acl[4] | (acl[5] << 8));
-        uint16_t cid = (uint16_t)(acl[6] | (acl[7] << 8));
+        bt_hid_input_t input;
+        int device_index = -1;
+        int target_slot = -1;
+        uint16_t vid = 0;
+        uint16_t pid = 0;
+        int found;
 
-        /* CID 0x0013 is standard Bluetooth HID Interrupt */
-        if (cid == 0x0013 && l2cap_len > 1) {
-            uint8_t hid_hdr = acl[8];
-            if ((hid_hdr & 0xF0) == 0xA0) { /* DATA INPUT */
-                const uint8_t *report = acl + 9;
-                int rlen = l2cap_len - 1;
+        if (!bt_acl_parse_hid_input(acl, (size_t)len, &input)) continue;
 
-                /* Find slot for this handle */
-                int target_slot = -1;
-                for (int s = 0; s < MAX_SLOTS; s++) {
-                    if (g_host.devices[s].acl_handle == handle && g_host.devices[s].slot >= 0) {
-                        target_slot = g_host.devices[s].slot;
-                        break;
-                    }
-                }
+        pthread_mutex_lock(&g_host.lock);
+        found = bt_find_device_by_acl_handle(g_host.devices, MAX_SLOTS,
+                                             input.handle, &device_index,
+                                             &target_slot);
+        if (found) {
+            /* The device-table index and virtual pad slot are independent. */
+            vid = g_host.devices[device_index].vid;
+            pid = g_host.devices[device_index].pid;
+        }
+        pthread_mutex_unlock(&g_host.lock);
 
-                if (target_slot >= 0) {
-                    pad_state_t st;
-                    if (profiles_parse_report(g_host.devices[target_slot].vid,
-                                              g_host.devices[target_slot].pid,
-                                              report, rlen, &st)) {
-                        st.conn_type = CONN_BLUETOOTH_CLASSIC;
-                        vpad_update(target_slot, &st);
-                    }
-                }
+        if (found) {
+            pad_state_t st;
+            if (profiles_parse_report(vid, pid, input.report,
+                                      input.report_len, &st)) {
+                st.conn_type = CONN_BLUETOOTH_CLASSIC;
+                vpad_update(target_slot, &st);
             }
         }
     }
