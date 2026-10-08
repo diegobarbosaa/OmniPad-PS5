@@ -8,10 +8,14 @@ BUILD_NUM := $(shell sed -E -n 's/.*ANYPAD_BUILD[[:space:]]+([0-9]+).*/\1/p' src
 ELF       := dist/OmniPad-PS5-$(VERSION)-b$(BUILD_NUM).elf
 BUILD     := build/ps5
 
-CFLAGS    := -std=c11 -Wall -Wextra -O2 -Isrc
+CFLAGS    := -std=c99 -Wall -Wextra -O2 -Isrc
+ifeq ($(TCP_DEBUG),1)
+CFLAGS    += -DOMNIPAD_ENABLE_TCP_DEBUG
+endif
 LDLIBS    += -lScePad -lSceUserService -lSceSystemService -lSceAppInstUtil -ldl
 
-SRCS := src/util.c src/log.c src/profiles.c \
+SRCS := src/util.c src/log.c src/profiles.c src/http_core.c \
+        src/tcp_frames.c src/usb_lifecycle.c \
         src/usb_controllers.c src/usb_hotplug.c \
         src/shellui_inject.c src/ps5_vpad.c \
         src/web.c src/tcp_stream.c src/main.c

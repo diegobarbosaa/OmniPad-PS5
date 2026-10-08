@@ -14,7 +14,7 @@ The engine is organized into **6 core layers**:
  │                      1. INPUT SOURCES                       │
  │   • 2.4GHz Dongles & USB Cables (Active in v1.0.4)          │
  │   • Console Internal Bluetooth (Roadmap for v1.1.0)         │
- │   • Local Network Injections (TCP Stream Port 9045)         │
+ │   • Opt-in Loopback TCP Debug Input (Port 9045)              │
  └──────────────────────────────┬──────────────────────────────┘
                                 │
  ┌──────────────────────────────▼──────────────────────────────┐
@@ -153,9 +153,6 @@ Games and emulators receive the inputs directly from the kernel, recognizing you
 
 ## 🌐 Web Dashboard (Port 8095)
 
-An embedded zero-dependency HTTP server serves the dashboard:
-- **`GET /`**: Glassmorphism Dark UI for smartphone, PC, or console browsers.
-- **`GET /api/status`**: JSON telemetry for all virtual slots, power telemetry, and connection types.
-- **`POST /api/pair`**: Reserved endpoint for the upcoming v1.1.0 Bluetooth pairing window (currently reports USB Plug & Play status).
-- **`POST /api/press_ps`**: Remotely triggers the PS button to open profile selection or wake the console.
-- **`POST /api/disconnect`**: Frees a specific slot on demand.
+An embedded zero-dependency HTTP server serves the dashboard at `127.0.0.1:8095` by default. A valid, permission-restricted `/data/anypad/web.token` explicitly enables LAN binding. In LAN mode, `GET /` and the read-only `GET /api/status` are public; log access and every `POST /api/*` endpoint require a bearer token. The server sends no CORS permission headers. See [NETWORK_SECURITY.md](NETWORK_SECURITY.md) for configuration.
+
+The TCP test input is disabled in production builds. `make ps5 TCP_DEBUG=1` opts into a loopback-only development listener on port 9045; it claims only a free virtual slot and releases that slot when the client disconnects or sends an invalid/incomplete frame.

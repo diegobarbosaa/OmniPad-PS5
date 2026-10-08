@@ -38,9 +38,10 @@ typedef struct {
 
 static hci_usb_state_t g_hci;
 
+#ifdef __PROSPERO__
 static void ring_push(pkt_ring_t *r, const uint8_t *data, int len)
 {
-    if (len > HCI_PKT_MAX) len = HCI_PKT_MAX;
+    if (!r || !data || len <= 0 || len > HCI_PKT_MAX) return;
     if (r->count == RING_SIZE) {
         r->head = (r->head + 1) % RING_SIZE;
         r->count--;
@@ -50,9 +51,11 @@ static void ring_push(pkt_ring_t *r, const uint8_t *data, int len)
     r->len[slot] = len;
     r->count++;
 }
+#endif
 
 static int ring_pop(pkt_ring_t *r, uint8_t *out, int max_len)
 {
+    if (!r || !out || max_len <= 0) return 0;
     if (r->count == 0) return 0;
     int len = r->len[r->head] < max_len ? r->len[r->head] : max_len;
     memcpy(out, r->pkt[r->head], (size_t)len);
@@ -64,8 +67,11 @@ static int ring_pop(pkt_ring_t *r, uint8_t *out, int max_len)
 /* Dynamic scanner for PS5 Bluetooth controller */
 static int scan_bluetooth_chip(bt_hci_device_info_t *out)
 {
+    if (!out) return 0;
     char path[32];
+#ifdef __PROSPERO__
     uint8_t buf[1024];
+#endif
 
     /* Probe common ugen nodes across Fat, Slim, and Pro */
     for (int bus = 0; bus <= 3; bus++) {
@@ -85,6 +91,7 @@ static int scan_bluetooth_chip(bt_hci_device_info_t *out)
 
                 if (ioctl(fd, USB_GET_FULL_DESC, &fdd) == 0 && fdd.ugd_actlen > 0) {
                     int len = (int)fdd.ugd_actlen;
+                    if (len > (int)sizeof(buf)) len = (int)sizeof(buf);
                     int off = 0;
                     int in_bt_iface = 0;
 
@@ -152,6 +159,7 @@ static int scan_bluetooth_chip(bt_hci_device_info_t *out)
 int bt_hci_init(void)
 {
     memset(&g_hci, 0, sizeof(g_hci));
+    g_hci.fd = -1;
     scan_bluetooth_chip(&g_hci.info);
 
     g_hci.fd = open(g_hci.info.dev_node, O_RDWR | O_NONBLOCK);
@@ -175,10 +183,17 @@ void bt_hci_poll(void)
     uint8_t buf[HCI_PKT_MAX];
     ssize_t n = read(g_hci.fd, buf, sizeof(buf));
     if (n > 0) {
-        if (buf[0] == 0x04) { /* HCI Event */
-            ring_push(&g_hci.events, buf + 1, (int)(n - 1));
-        } else if (buf[0] == 0x02) { /* HCI ACL Data */
-            ring_push(&g_hci.acl, buf + 1, (int)(n - 1));
+        if (buf[0] == 0x04 && n >= 3) { /* HCI Event: code + length required */
+            uint8_t event_len = buf[2];
+            if ((ssize_t)event_len == n - 3) {
+                ring_push(&g_hci.events, buf + 1, (int)(n - 1));
+            }
+        } else if (buf[0] == 0x02 && n >= 5) { /* HCI ACL header required */
+            uint16_t acl_len = (uint16_t)((uint16_t)buf[3] |
+                                         ((uint16_t)buf[4] << 8));
+            if ((ssize_t)acl_len == n - 5) {
+                ring_push(&g_hci.acl, buf + 1, (int)(n - 1));
+            }
         }
     }
 #endif
@@ -186,7 +201,8 @@ void bt_hci_poll(void)
 
 int bt_hci_send_cmd(uint16_t ocf, uint8_t ogf, const void *param, uint8_t param_len)
 {
-    if (!g_hci.is_open || g_hci.fd < 0) return -1;
+    if (!g_hci.is_open || g_hci.fd < 0 ||
+        (param_len > 0 && !param) || param_len > 252u) return -1;
 
 #ifdef __PROSPERO__
     struct usb_ctl_request req;
@@ -223,7 +239,9 @@ int bt_hci_send_cmd(uint16_t ocf, uint8_t ogf, const void *param, uint8_t param_
 
 int bt_hci_send_acl(uint16_t handle, uint8_t pb, const void *data, uint16_t len)
 {
-    if (!g_hci.is_open || g_hci.fd < 0 || !data) return -1;
+    if (!g_hci.is_open || g_hci.fd < 0 || !data ||
+        handle == 0u || handle > 0x0effu || pb > 3u ||
+        len > HCI_PKT_MAX - 4u) return -1;
 
 #ifdef __PROSPERO__
     uint8_t pkt[HCI_PKT_MAX];
