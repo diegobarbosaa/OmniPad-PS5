@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""
-send_frame.py - Send test controller inputs over LAN to OmniPad PS5
-Listens on TCP port 9045
+"""Send development controller input to OmniPad's loopback-only TCP test port.
+
+The payload must be built with TCP_DEBUG=1. The debug listener is disabled in
+production builds and binds to 127.0.0.1 when enabled.
 """
 
 import sys
 import socket
 import struct
 import time
+import math
 
 BUTTONS = {
     "cross":    1 << 14,
@@ -34,13 +36,28 @@ def make_frame(btn_mask=0, lx=128, ly=128, rx=128, ry=128, l2=0, r2=0):
 
 def main():
     if len(sys.argv) < 3:
-        print(f"Usage: python {sys.argv[0]} <PS5_IP> <button|lx|ly|rx|ry> [duration_seconds]")
+        print(f"Usage: python {sys.argv[0]} <HOST> <button|left_stick_left|left_stick_right|left_stick_up|left_stick_down> [duration_seconds]")
+        print("HOST must be 127.0.0.1 on the machine running the development payload.")
         print("Available buttons:", ", ".join(BUTTONS.keys()))
         sys.exit(1)
 
     ps5_ip = sys.argv[1]
     cmd = sys.argv[2].lower()
-    duration = float(sys.argv[3]) if len(sys.argv) > 3 else 1.0
+    try:
+        duration = float(sys.argv[3]) if len(sys.argv) > 3 else 1.0
+    except ValueError:
+        print("Duration must be a number between 0 and 3600 seconds.")
+        return 1
+    if not math.isfinite(duration) or duration < 0 or duration > 3600:
+        print("Duration must be between 0 and 3600 seconds.")
+        return 1
+
+    stick_commands = {
+        "left_stick_left", "left_stick_right", "left_stick_up", "left_stick_down"
+    }
+    if cmd not in BUTTONS and cmd not in stick_commands:
+        print(f"Unknown button or stick command: {cmd}")
+        return 1
 
     mask = BUTTONS.get(cmd, 0)
     lx, ly, rx, ry = 128, 128, 128, 128
@@ -54,26 +71,25 @@ def main():
     elif cmd == "left_stick_down":
         ly = 255
 
-    print(f"[*] Connecting to {ps5_ip}:9045...")
+    print(f"[*] Connecting to local debug port at {ps5_ip}:9045...")
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(3.0)
-        s.connect((ps5_ip, 9045))
-        
-        frame = make_frame(mask, lx, ly, rx, ry)
-        s.sendall(frame)
-        print(f"[+] Sent command '{cmd}' for {duration}s!")
-        time.sleep(duration)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(3.0)
+            sock.connect((ps5_ip, 9045))
 
-        # Release frame
-        s_rel = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s_rel.connect((ps5_ip, 9045))
-        s_rel.sendall(make_frame(0, 128, 128, 128, 128))
-        s_rel.close()
-        s.close()
-        print("[+] Button released successfully.")
+            frame = make_frame(mask, lx, ly, rx, ry)
+            deadline = time.monotonic() + duration
+            while True:
+                sock.sendall(frame)
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.02)
+        print(f"[+] Sent command '{cmd}' for {duration}s!")
+        print("[+] Debug slot released when the connection closed.")
     except Exception as e:
         print(f"[-] Error sending frame: {e}")
+        return 1
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
