@@ -695,8 +695,11 @@ void vpad_poll(long now)
     for (int i = 0; i < MAX_SLOTS; i++) {
         pthread_mutex_lock(&g_vpad_mutex);
         if (g_slots[i].status == VP_READY && (g_slots[i].handle > 0 || g_slots[i].alt_handle > 0)) {
-            /* Reset latched state to neutral if no updates received for > 500ms (avoids stuck buttons on sleep) */
-            if (now - g_slots[i].last_update_time > 500) {
+            /* Reset latched state to neutral if a network stream stops sending frames for > 500ms.
+             * USB controllers (wired & 2.4G) are event-driven and only emit reports on state change,
+             * so their latched state must be preserved until a release report or USB disconnect. */
+            if (g_slots[i].conn_type == CONN_NETWORK_STREAM &&
+                now - g_slots[i].last_update_time > 500) {
                 pad_state_neutral(&g_slots[i].pad_state);
             }
 
