@@ -54,6 +54,17 @@ usb_controller_type_t usb_identify_controller(uint16_t vid, uint16_t pid, const 
         }
     }
 
+    /* HID identities/layouts reported by Essyekky32 (Essy), issue #16.
+     * Other GameSir IDs retain the pre-existing generic classification. */
+    if (vid == 0x3537 && (pid == 0x1022 || pid == 0x1082)) {
+        if (pid == 0x1022) {
+            if (name_out) *name_out = "GameSir G7 Pro (USB HID)";
+            return CTRL_GAMESIR_G7PRO;
+        }
+        if (name_out) *name_out = "GameSir G7 SE (USB HID)";
+        return CTRL_GAMESIR_G7SE;
+    }
+
     /* Machenike, ShanWan & Thunderobot native VIDs (Wired USB-C, Dongle & PC modes) */
     if (vid == 0x2345 || vid == 0x2563 || vid == 0x2f24 || vid == 0x20bc || vid == 0x3537 || vid == 0x0e8f) {
         if (name_out) *name_out = "MACHENIKE G5 Pro / ShanWan Pad";
@@ -171,6 +182,38 @@ int usb_init_controller_handshake(int fd, usb_controller_type_t type)
     return 0;
 }
 
+static void gamesir_parse_gamepad(const uint8_t *p, pad_state_t *st)
+{
+    uint8_t b0 = p[0], b1 = p[1];
+    if (b0 & 0x01) st->buttons |= PAD_BTN_CROSS;
+    if (b0 & 0x02) st->buttons |= PAD_BTN_CIRCLE;
+    if (b0 & 0x08) st->buttons |= PAD_BTN_SQUARE;
+    if (b0 & 0x10) st->buttons |= PAD_BTN_TRIANGLE;
+    if (b0 & 0x40) st->buttons |= PAD_BTN_L1;
+    if (b0 & 0x80) st->buttons |= PAD_BTN_R1;
+    if (b1 & 0x01) st->buttons |= PAD_BTN_L2;
+    if (b1 & 0x02) st->buttons |= PAD_BTN_R2;
+    if (b1 & 0x04) st->buttons |= PAD_BTN_SHARE;
+    if (b1 & 0x08) st->buttons |= PAD_BTN_OPTIONS;
+    if (b1 & 0x20) st->buttons |= PAD_BTN_L3;
+    if (b1 & 0x40) st->buttons |= PAD_BTN_R3;
+    switch (p[2] & 0x0f) {
+    case 0: st->buttons |= PAD_DPAD_UP; break;
+    case 1: st->buttons |= PAD_DPAD_UP | PAD_DPAD_RIGHT; break;
+    case 2: st->buttons |= PAD_DPAD_RIGHT; break;
+    case 3: st->buttons |= PAD_DPAD_DOWN | PAD_DPAD_RIGHT; break;
+    case 4: st->buttons |= PAD_DPAD_DOWN; break;
+    case 5: st->buttons |= PAD_DPAD_DOWN | PAD_DPAD_LEFT; break;
+    case 6: st->buttons |= PAD_DPAD_LEFT; break;
+    case 7: st->buttons |= PAD_DPAD_UP | PAD_DPAD_LEFT; break;
+    default: break;
+    }
+    st->lx = p[3]; st->ly = p[4]; st->rx = p[5]; st->ry = p[6];
+    st->l2 = p[7]; st->r2 = p[8];
+    if (st->l2 >= PAD_TRIGGER_DIGITAL_THRESHOLD) st->buttons |= PAD_BTN_L2;
+    if (st->r2 >= PAD_TRIGGER_DIGITAL_THRESHOLD) st->buttons |= PAD_BTN_R2;
+}
+
 uint8_t axis16_to_u8(int16_t val, int invert_y)
 {
     if (val == 0) return 128;
@@ -186,6 +229,15 @@ int usb_parse_input_report(usb_controller_type_t type, const uint8_t *data, size
     pad_state_neutral(st);
 
     switch (type) {
+    case CTRL_GAMESIR_G7PRO:
+        if (len < 9) return 0;
+        gamesir_parse_gamepad(data, st);
+        return 1;
+    case CTRL_GAMESIR_G7SE:
+        if (len < 10 || data[0] != 0x05) return 0;
+        gamesir_parse_gamepad(data + 1, st);
+        return 1;
+
     case CTRL_NINTENDO_SWITCH_PRO: {
         /* 64-byte or standard Switch Pro input report */
         if (len < 12) return 0;

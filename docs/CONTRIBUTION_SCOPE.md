@@ -1,13 +1,13 @@
-# Available upstream test baseline
+# GameSir HID identification and decoding
 
-Base/dependency: `b7682ef`. This is a private preparation branch; no PR or
+Base/dependency: `contrib/test-baseline`. This is a private preparation branch; no PR or
 public release is authorized. Target personal environment: PS5 Pro FW 10.20.
 
 ## Scope
-Keep existing available parser/ABI/flow tests. Missing source targets remain conditional and emit explicit SKIP lines; no test is represented as passing when absent. Keep C test sources trackable. Guard a Prospero-only log field for host compilation.
+Only exact 3537:1022 and 3537:1082 identities, nine-byte G7 Pro and prefixed G7 SE reports, and invalid-report fallback protection. No watchdog, PS shortcut, Switch or Ultimate changes.
 
 ## Evidence and risks
-Six upstream tests are unavailable in the published tree; this is a documented coverage gap. No USB runtime behavior changes on PS5.
+G7 Pro worked in an earlier user build on 10.20; G7 SE relies on Essy external evidence and synthetic tests. Unknown GameSir PIDs keep upstream classification; malformed reports must not become generic phantom input.
 
 The user physically tested G7 Pro and 20-second retention only in an earlier
 personal build. The combined B26, new architecture and maintained PS still need
