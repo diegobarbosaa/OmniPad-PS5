@@ -3,6 +3,7 @@
 #include "ps5_vpad.h"
 #include "log.h"
 #include "util.h"
+#include "remap.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +35,15 @@ typedef struct {
     pthread_t             thread;
     volatile int          stop_thread;
 
+    /* OmniPad: game rumble, written by the main loop, sent by the reader. */
+    volatile uint8_t      rum_strong, rum_weak;
+    uint8_t               rum_sent_strong, rum_sent_weak;
+    uint8_t               gip_seq;
+    uint8_t               sw_counter;       /* Switch: output report packet counter */
+    int                   sw_vib_on;        /* Switch: vibration enabled (subcommand 0x48) */
+    long                  rum_sent_at;      /* Switch: last rumble report, for the refresh */
+    volatile int          small_motor;      /* from <map dir>/USB_VVVV_PPPP.map; 1 = on */
+
 #ifdef __PROSPERO__
     struct usb_fs_endpoint endpoints[4];
     uint8_t               in_index;
@@ -56,6 +66,40 @@ typedef struct {
 } usb_hotplug_state_t;
 
 static usb_hotplug_state_t g_usb_hotplug;
+
+/* Per-model USB settings file: USB pads have no unique id like a BT address,
+ * so settings are kept per VID:PID. Default: small motor on. */
+#define USB_MAP_DIR "/data/omnipad/maps"
+/* Button overrides for this model, from <map dir>/USB_VVVV_PPPP.map. */
+static void usb_apply_remap(int slot, uint16_t vid, uint16_t pid)
+{
+    char id[24];
+    uint32_t map[REMAP_N];
+    snprintf(id, sizeof id, "USB_%04X_%04X", vid, pid);
+    remap_load(id, map);
+    vpad_set_remap(slot, map);
+}
+
+static int usb_read_small_motor(uint16_t vid, uint16_t pid)
+{
+    char path[128], line[128];
+    int on = 1;
+    snprintf(path, sizeof path, USB_MAP_DIR "/USB_%04X_%04X.map", vid, pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return 1;
+    while (fgets(line, sizeof line, f)) {
+        char *k = line, *eq = strchr(line, '=');
+        if (!eq || *k == '#') continue;
+        *eq = 0;
+        while (*k == ' ' || *k == '\t') k++;
+        char *ke = eq; while (ke > k && (ke[-1] == ' ' || ke[-1] == '\t')) *--ke = 0;
+        if (strcmp(k, "small_motor") != 0) continue;
+        char *v = eq + 1; while (*v == ' ' || *v == '\t') v++;
+        on = strncmp(v, "off", 3) != 0;
+    }
+    fclose(f);
+    return on;
+}
 static uint32_t s_last_seen[6][21] = {{0}};
 
 #ifdef __PROSPERO__
@@ -318,6 +362,104 @@ static void ack_gip_packet(usb_slot_device_t *dev, const uint8_t *report, int co
     }
 }
 
+/* Nintendo Switch HD rumble amplitude, 0..255 level -> encoded amplitude
+ * (0..100), from CTCaer's Joy-Con formula (jc_toolkit):
+ *   a > 0.23: log2(a * 8.7) * 32;  a > 0.12: log2(a * 17) * 16;
+ *   a <= 0.12: linear from 0 up to the middle branch's value at 0.12.
+ *   a = level / 255.
+ * Precomputed so the payload needs no libm. */
+static const uint8_t k_switch_amp[256] = {
+      0,  1,  1,  2,  2,  3,  3,  4,  4,  5,  5,  6,  6,  7,  8,  8,
+      9,  9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 15, 15, 16, 16, 17,
+     17, 18, 19, 20, 20, 21, 21, 22, 23, 23, 24, 24, 25, 25, 26, 26,
+     27, 27, 28, 28, 29, 29, 30, 30, 30, 31, 31, 32, 33, 34, 35, 35,
+     36, 37, 37, 38, 39, 40, 40, 41, 41, 42, 43, 43, 44, 45, 45, 46,
+     46, 47, 47, 48, 49, 49, 50, 50, 51, 51, 52, 52, 53, 53, 54, 54,
+     55, 55, 56, 56, 57, 57, 58, 58, 58, 59, 59, 60, 60, 61, 61, 61,
+     62, 62, 63, 63, 64, 64, 64, 65, 65, 65, 66, 66, 67, 67, 67, 68,
+     68, 68, 69, 69, 69, 70, 70, 71, 71, 71, 72, 72, 72, 73, 73, 73,
+     73, 74, 74, 74, 75, 75, 75, 76, 76, 76, 77, 77, 77, 77, 78, 78,
+     78, 79, 79, 79, 79, 80, 80, 80, 81, 81, 81, 81, 82, 82, 82, 82,
+     83, 83, 83, 84, 84, 84, 84, 85, 85, 85, 85, 86, 86, 86, 86, 87,
+     87, 87, 87, 87, 88, 88, 88, 88, 89, 89, 89, 89, 90, 90, 90, 90,
+     90, 91, 91, 91, 91, 92, 92, 92, 92, 92, 93, 93, 93, 93, 93, 94,
+     94, 94, 94, 95, 95, 95, 95, 95, 96, 96, 96, 96, 96, 96, 97, 97,
+     97, 97, 97, 98, 98, 98, 98, 98, 99, 99, 99, 99, 99,100,100,100
+};
+
+/* One actuator's 4 bytes: high band 320 Hz carries the weak motor, low band
+ * 160 Hz the strong one. Both 0 gives the neutral 00 01 40 40. */
+static void switch_rumble_block(uint8_t *b, uint8_t strong, uint8_t weak)
+{
+    const uint16_t hf = 0x0100;                 /* (round(log2(320/10)*32) - 0x60) * 4 */
+    const uint8_t  lf = 0x40;                   /*  round(log2(160/10)*32) - 0x40      */
+    uint16_t hf_amp = (uint16_t)(k_switch_amp[weak] * 2);
+    uint16_t lf_amp = (uint16_t)(k_switch_amp[strong] / 2 + 0x40);
+    b[0] = (uint8_t)(hf & 0xFF);
+    b[1] = (uint8_t)(hf_amp + ((hf >> 8) & 0xFF));
+    b[2] = (uint8_t)(lf + ((lf_amp >> 8) & 0xFF));
+    b[3] = (uint8_t)(lf_amp & 0xFF);
+}
+
+/* Sends the pending rumble level if it changed. Called from the reader thread,
+ * which owns the device. Formats:
+ *   Switch Pro (USB): subcommand 0x48 once, then report 10 cnt + 2 x 4-byte HD rumble
+ *   Xbox One GIP:  09 00 seq 09 00 0F LT RT L R dur delay repeat (motors 0..100)
+ *   XInput / 360 (incl. 8BitDo receivers in X-input mode): 00 08 00 L R 00 00 00
+ *   DualShock 4 USB: report 05, flags 01 (rumble only), [4] weak, [5] strong */
+static void usb_send_rumble(usb_slot_device_t *dev, int is_xbox_one)
+{
+    uint8_t s = dev->rum_strong, w = dev->small_motor ? dev->rum_weak : 0;
+    int changed = s != dev->rum_sent_strong || w != dev->rum_sent_weak;
+    if (!dev->use_fs || !dev->has_out) return;
+    int r = -1;
+    if (dev->type == CTRL_NINTENDO_SWITCH_PRO) {
+        /* Switch pads stop on their own unless rumble keeps coming, so a
+         * running level is sent again every 30 ms, not only on change. */
+        long now = now_ms();
+        if (!changed && (!(s | w) || now - dev->rum_sent_at < 30)) return;
+        uint8_t pkt[64];
+        memset(pkt, 0, sizeof pkt);
+        if (!dev->sw_vib_on) {
+            /* Output report 0x01, subcommand 0x48 0x01: vibration on. */
+            pkt[0] = 0x01;
+            pkt[1] = dev->sw_counter++ & 0x0F;
+            switch_rumble_block(pkt + 2, 0, 0);
+            switch_rumble_block(pkt + 6, 0, 0);
+            pkt[10] = 0x48;
+            pkt[11] = 0x01;
+            if (usb_fs_send_packet(dev, pkt, sizeof pkt, 8) >= 0) dev->sw_vib_on = 1;
+            memset(pkt, 0, sizeof pkt);
+        }
+        /* Output report 0x10: rumble only, left then right actuator. */
+        pkt[0] = 0x10;
+        pkt[1] = dev->sw_counter++ & 0x0F;
+        switch_rumble_block(pkt + 2, s, w);
+        switch_rumble_block(pkt + 6, s, w);
+        r = usb_fs_send_packet(dev, pkt, sizeof pkt, 8);
+        if (r >= 0) dev->rum_sent_at = now;
+    } else if (!changed) {
+        return;
+    } else if (is_xbox_one) {
+        uint8_t pkt[13] = { 0x09, 0x00, dev->gip_seq++, 0x09, 0x00, 0x0F, 0x00, 0x00,
+                            (uint8_t)(s * 100 / 255), (uint8_t)(w * 100 / 255), 0xFF, 0x00, 0x00 };
+        r = usb_fs_send_packet(dev, pkt, sizeof pkt, 8);
+    } else if (dev->type == CTRL_XBOX_XINPUT || dev->type == CTRL_8BITDO_ADAPTER) {
+        uint8_t pkt[8] = { 0x00, 0x08, 0x00, s, w, 0x00, 0x00, 0x00 };
+        r = usb_fs_send_packet(dev, pkt, sizeof pkt, 8);
+    } else if (dev->type == CTRL_SONY_DS4) {
+        uint8_t pkt[32];
+        memset(pkt, 0, sizeof pkt);
+        pkt[0] = 0x05; pkt[1] = 0x01; pkt[4] = w; pkt[5] = s;
+        r = usb_fs_send_packet(dev, pkt, sizeof pkt, 8);
+    } else {
+        /* Unknown rumble format: never retry. */
+        dev->rum_sent_strong = s; dev->rum_sent_weak = w;
+        return;
+    }
+    if (r >= 0) { dev->rum_sent_strong = s; dev->rum_sent_weak = w; }
+}
+
 #endif /* __PROSPERO__ */
 
 static void *usb_reader_worker(void *arg)
@@ -372,6 +514,7 @@ static void *usb_reader_worker(void *arg)
             if (n > 0 && is_xbox_one) {
                 ack_gip_packet(dev, report, n);
             }
+            usb_send_rumble(dev, is_xbox_one);
         }
 #else
         for (int i = 0; i < 6; i++) {
@@ -591,6 +734,7 @@ static void probe_usb_devices(void)
             sdev->type = ctype;
             sdev->name = ctrl_name;
             sdev->stop_thread = 0;
+            sdev->small_motor = usb_read_small_motor(vid, pid);
 
 #ifdef __PROSPERO__
             if (!usb_fs_setup_device(sdev)) {
@@ -617,6 +761,7 @@ static void probe_usb_devices(void)
             sdev->conn_type = is_dongle ? CONN_USB_DONGLE_24G : CONN_USB_WIRED;
 
             vpad_add(slot, sdev->conn_type, ctrl_name);
+            usb_apply_remap(slot, vid, pid);
             pthread_create(&sdev->thread, NULL, usb_reader_worker, sdev);
         }
     }
@@ -716,4 +861,47 @@ void usb_hotplug_cleanup(void)
             memset(&g_usb_hotplug.devices[i], 0, sizeof(usb_slot_device_t));
         }
     }
+}
+
+/* ---- OmniPad extensions: identity, rumble, settings ---------------------- */
+
+int usb_hotplug_slot_ids(int slot, uint16_t *vid, uint16_t *pid)
+{
+    int ok = 0;
+    if (slot < 0 || slot >= MAX_SLOTS) return 0;
+    pthread_mutex_lock(&g_usb_hotplug.lock);
+    if (g_usb_hotplug.devices[slot].active) {
+        *vid = g_usb_hotplug.devices[slot].vid;
+        *pid = g_usb_hotplug.devices[slot].pid;
+        ok = 1;
+    }
+    pthread_mutex_unlock(&g_usb_hotplug.lock);
+    return ok;
+}
+
+int usb_hotplug_any(void)
+{
+    for (int i = 0; i < MAX_SLOTS; i++)
+        if (g_usb_hotplug.devices[i].active) return 1;
+    return 0;
+}
+
+void usb_hotplug_set_rumble(int slot, uint8_t strong, uint8_t weak)
+{
+    if (slot < 0 || slot >= MAX_SLOTS || !g_usb_hotplug.devices[slot].active) return;
+    /* Plain stores: the reader thread picks the pair up on its next tick. */
+    g_usb_hotplug.devices[slot].rum_strong = strong;
+    g_usb_hotplug.devices[slot].rum_weak = weak;
+}
+
+void usb_hotplug_reload_configs(void)
+{
+    pthread_mutex_lock(&g_usb_hotplug.lock);
+    for (int i = 0; i < MAX_SLOTS; i++) {
+        usb_slot_device_t *d = &g_usb_hotplug.devices[i];
+        if (!d->active) continue;
+        d->small_motor = usb_read_small_motor(d->vid, d->pid);
+        usb_apply_remap(i, d->vid, d->pid);
+    }
+    pthread_mutex_unlock(&g_usb_hotplug.lock);
 }

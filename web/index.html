@@ -1,0 +1,918 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>OmniPad</title>
+<style>
+  :root{
+    --bg:#090b0f; --bg-2:#0e1117;
+    --panel:#12161d; --panel-2:#171c25; --panel-3:#1d232e;
+    --line:rgba(255,255,255,.07); --line-2:rgba(255,255,255,.12);
+    --fg:#e9edf3; --muted:#8a93a6; --dim:#5d6678;
+    --accent:#4f8cff; --accent-soft:rgba(79,140,255,.14); --accent-ink:#9fc0ff;
+    --good:#34d399; --good-soft:rgba(52,211,153,.14);
+    --warn:#fbbf24; --warn-soft:rgba(251,191,36,.14);
+    --bad:#f87171;  --bad-soft:rgba(248,113,113,.14);
+    --shell:#f2f3f5; --shell-edge:#c9cdd4; --shell-shade:#dcdfe4;
+    --face:#15181d; --face-2:#1e2229; --face-edge:#2b313b;
+    --r:14px; --r-sm:10px;
+    --font:-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  html{scroll-behavior:smooth;scroll-padding-top:72px}
+  body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--font);-webkit-font-smoothing:antialiased;min-height:100vh;
+       background-image:radial-gradient(900px 400px at 50% -120px,rgba(79,140,255,.10),transparent 70%)}
+  a{color:var(--accent-ink);text-decoration:none}
+  button,select,input{font:inherit;color:inherit}
+  button{cursor:pointer;border:0;background:none}
+
+  /* ---------- Top bar ---------- */
+  .top{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);background:rgba(9,11,15,.78);border-bottom:1px solid var(--line)}
+  .top-in{max-width:1180px;margin:0 auto;padding:0 20px;height:58px;display:flex;align-items:center;gap:18px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;letter-spacing:-.3px;font-size:17px}
+  .brand .mark{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,#4f8cff,#a78bfa);display:grid;place-items:center;color:#fff;font-size:13px;font-weight:900}
+  .brand .ver{white-space:nowrap;font:600 11px var(--mono);color:var(--muted);background:var(--panel-2);border:1px solid var(--line);padding:2px 7px;border-radius:6px}
+  nav{display:flex;gap:4px;margin-left:8px}
+  nav a{padding:7px 11px;border-radius:8px;color:var(--muted);font-size:13.5px;font-weight:600}
+  nav a:hover{color:var(--fg);background:var(--panel-2)}
+  nav a.on{color:var(--fg);background:var(--panel-3)}
+  .top .sp{flex:1}
+  .btpill{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;color:var(--muted);padding:5px 10px;border:1px solid var(--line);border-radius:999px;background:var(--panel)}
+  .dot{width:8px;height:8px;border-radius:50%;background:#3a4252;flex:none}
+  .dot.on{background:var(--good);box-shadow:0 0 0 3px var(--good-soft)}
+  .dot.busy{background:var(--warn);box-shadow:0 0 0 3px var(--warn-soft);animation:pulse 1.2s infinite}
+  @keyframes pulse{50%{opacity:.45}}
+
+  /* ---------- Layout ---------- */
+  .wrap{max-width:1180px;margin:0 auto;padding:26px 20px 90px}
+  section{margin-bottom:34px}
+  .sec-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:12px}
+  .sec-h h2{font-size:14px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--muted)}
+  .sec-h .hint{font-size:12.5px;color:var(--dim)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .grid2{display:grid;grid-template-columns:1.45fr 1fr;gap:16px;align-items:start}
+  @media (max-width:980px){.grid3{grid-template-columns:1fr 1fr}.grid2{grid-template-columns:1fr}nav{display:none}}
+
+  /* ---------- Buttons ---------- */
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:38px;padding:0 14px;border-radius:var(--r-sm);
+       background:var(--panel-2);border:1px solid var(--line-2);font-weight:600;font-size:13.5px;transition:background .15s,border-color .15s,transform .05s;white-space:nowrap}
+  .btn:hover{background:var(--panel-3);border-color:rgba(255,255,255,.2)}
+  .btn:active{transform:translateY(1px)}
+  .btn:disabled{opacity:.5;cursor:default}
+  .btn.primary{background:var(--accent);border-color:transparent;color:#fff}
+  .btn.primary:hover{background:#6a9dff}
+  .btn.ghost{background:transparent}
+  .btn.danger{color:var(--bad);border-color:rgba(248,113,113,.3)}
+  .btn.danger:hover{background:var(--bad-soft)}
+  .btn.sm{height:32px;padding:0 11px;font-size:12.5px}
+  .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+
+  /* ---------- Player cards ---------- */
+  .slot{position:relative;min-height:168px;display:flex;flex-direction:column;gap:10px}
+  .slot.live{border-color:rgba(52,211,153,.35);background:linear-gradient(180deg,rgba(52,211,153,.05),transparent 60%),var(--panel)}
+  .slot.empty{border-style:dashed;background:transparent}
+  .slot .who{display:flex;justify-content:space-between;align-items:center}
+  .slot .pnum{font-size:11.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--muted)}
+  .slot .name{font-size:16.5px;font-weight:700;letter-spacing:-.2px;word-break:break-word}
+  .slot .empty-txt{color:var(--dim);font-size:13.5px;text-align:center}
+  .slot .pic{height:96px;display:grid;place-items:center;border-radius:10px;background:radial-gradient(60% 70% at 50% 50%,#1b2231 0%,transparent 75%)}
+  .slot .pic img{max-height:88px;max-width:88%;display:block}
+  .slot.empty .pic img{opacity:.16;filter:grayscale(1)}
+  .slot .foot{display:flex;justify-content:flex-end;margin-top:2px}
+  .slot .foot .btn{color:var(--fg)}
+  /* controller picker in Controller settings */
+  .pick{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  .pick button{display:inline-flex;align-items:center;gap:9px;padding:6px 12px 6px 6px;border-radius:10px;border:1px solid var(--line-2);background:var(--panel-2);font-size:13px;font-weight:600;color:var(--muted)}
+  .pick button img{width:38px;height:27px;object-fit:contain}
+  .pick button .gi{width:38px;height:27px;display:grid;place-items:center;color:var(--dim)}
+  .pick button .gi svg{width:24px;height:24px}
+  .pick button small{font:500 11px var(--mono);color:var(--dim);display:block}
+  .pick button.on{border-color:rgba(79,140,255,.55);background:#17233a;color:var(--fg)}
+  .pick .dot{width:7px;height:7px}
+  .cfg-empty{display:block}
+  .remap-h{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+  .remap-h b{font-size:15px}
+  .remap-h .h{color:var(--muted);font-size:12.5px;margin-top:2px;max-width:620px}
+  .remap-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  @media (max-width:980px){.remap-grid{grid-template-columns:1fr 1fr}}
+  @media (max-width:600px){.remap-grid{grid-template-columns:1fr}}
+  .rm{display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px;padding:8px 8px 8px 12px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel-2)}
+  .rm .n{font-weight:600;font-size:13.5px}
+  .rm select.map{min-width:0;width:168px;padding:6px 26px 6px 10px;font-size:13px}
+  .rm.ov{border-color:rgba(251,191,36,.45);background:rgba(251,191,36,.06)}
+  .rm.ov .n::after{content:"override";margin-left:8px;font:700 9.5px var(--font);letter-spacing:.4px;text-transform:uppercase;color:var(--warn)}
+  .simple-h{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:12px}
+  .simple-h b{font-size:15px}
+  .simple-h span{font:12px var(--mono);color:var(--dim)}
+  .cfg-empty .t{font-weight:700;font-size:15px;margin-bottom:4px}
+  .cfg-empty .h{color:var(--muted);font-size:13.5px;max-width:520px}
+  .tags{display:flex;gap:6px;flex-wrap:wrap}
+  .tag{font-size:11.5px;font-weight:600;padding:3px 8px;border-radius:6px;background:var(--panel-2);border:1px solid var(--line);color:#c6cdd9}
+  .tag.blue{background:var(--accent-soft);border-color:rgba(79,140,255,.3);color:var(--accent-ink)}
+  .tag.green{background:var(--good-soft);border-color:rgba(52,211,153,.3);color:#86efc5}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:12.5px;color:var(--muted);margin-top:auto}
+  .kv b{color:var(--fg);font-weight:600;font-family:var(--mono);font-size:12px}
+  .batt{display:inline-flex;align-items:center;gap:6px}
+  .batt i{display:inline-block;width:22px;height:11px;border:1.5px solid var(--muted);border-radius:3px;position:relative}
+  .batt i::after{content:"";position:absolute;right:-4px;top:2.5px;width:2px;height:4px;background:var(--muted);border-radius:1px}
+  .batt i b{position:absolute;left:1px;top:1px;bottom:1px;background:var(--good);border-radius:1px}
+
+  /* ---------- Bluetooth ---------- */
+  .bt{display:grid;grid-template-columns:auto 1fr auto;gap:18px;align-items:center}
+  @media (max-width:760px){.bt{grid-template-columns:1fr}}
+  .bt .ico{width:48px;height:48px;border-radius:12px;background:var(--panel-2);border:1px solid var(--line);display:grid;place-items:center;color:var(--accent-ink);font-size:20px}
+  .bt .st{font-weight:700;font-size:15px}
+  .bt .sub{color:var(--muted);font-size:13px}
+  .disc{margin-top:14px;border-top:1px solid var(--line);padding-top:12px;display:none}
+  .disc.show{display:block}
+  .dev{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel-2);margin-top:8px}
+  .dev code{flex:1;font:600 13px var(--mono)}
+  .disc .none{color:var(--dim);font-size:13px}
+
+  /* ---------- Remembered pads ---------- */
+  .known{margin-top:16px;border-top:1px solid var(--line);padding-top:14px}
+  .known-h{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:4px}
+  .known-h b{font-size:13.5px}
+  .known-h span{font-size:12.5px;color:var(--dim)}
+  .kpad{display:grid;grid-template-columns:64px 1fr auto;gap:14px;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel-2);margin-top:8px}
+  .kpad .th{width:64px;height:44px;border-radius:8px;background:#0d1117;display:grid;place-items:center;overflow:hidden}
+  .kpad .th img{max-width:58px;max-height:40px;display:block}
+  .kpad .th svg{width:30px;height:30px;color:var(--dim)}
+  .kpad .nm{font-weight:600;line-height:1.3}
+  .kpad .mt{font:12px var(--mono);color:var(--muted)}
+  .kpad .acts{display:flex;gap:8px;align-items:center}
+  .kpad .prog{grid-column:1/-1;display:none;align-items:center;gap:10px;font-size:12.5px;color:var(--muted);padding:9px 11px;border-radius:8px;background:#0f141c;border:1px solid var(--line)}
+  .kpad .prog.show{display:flex}
+  .kpad .prog b{color:var(--fg);font-weight:600}
+  .kpad .prog .bar{flex:1;height:4px;border-radius:2px;background:#232a36;overflow:hidden;min-width:60px}
+  .kpad .prog .bar i{display:block;height:100%;background:var(--accent);transition:width .9s linear}
+  .kpad .prog.warn .bar i{background:var(--warn)}
+  .kpad .prog.ok{color:#86efc5}
+  .kpad .prog.bad{color:#fca5a5}
+  .spin{width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,.15);border-top-color:var(--accent);animation:spin .8s linear infinite;flex:none}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .known .none{color:var(--dim);font-size:13px;padding:6px 0}
+
+  /* ---------- Mapping visual ---------- */
+  .mv{display:grid;grid-template-columns:1fr 56px 1fr;gap:10px;align-items:center}
+  @media (max-width:860px){.mv{grid-template-columns:1fr}.mv-arrow{transform:rotate(90deg)}}
+  .mv-col{display:flex;flex-direction:column;gap:10px;min-width:0}
+  .mv-h{display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--muted)}
+  .mv-h span{font-weight:600;text-transform:none;letter-spacing:0;color:var(--dim)}
+  .mv-arrow{display:grid;place-items:center;color:var(--dim);font-size:22px}
+  .stage{position:relative;border-radius:12px;background:radial-gradient(70% 70% at 50% 45%,#1b2231 0%,#0d1016 80%);border:1px solid var(--line);padding:14px}
+  .stage .in{position:relative}
+  .stage img{display:block;width:100%;height:auto;user-select:none;-webkit-user-drag:none;pointer-events:none}
+  .stage .cap{position:absolute;left:12px;top:9px;font-size:11px;font-weight:600;color:var(--dim)}
+  .stage.top{padding:30px 14px 8px}
+  .stage.front{padding:30px 30px 14px}
+  /* 8BitDo extras */
+  .hs{position:absolute;transform:translate(-50%,-50%);display:grid;place-items:center;border-radius:9px;border:2px solid var(--accent);background:rgba(79,140,255,.18);
+      color:#e6efff;font:800 11px var(--font);cursor:pointer;box-shadow:0 0 0 0 rgba(79,140,255,.5);transition:background .15s,box-shadow .15s,border-color .15s}
+  .hs:hover,.hs.sel{background:rgba(79,140,255,.42);border-color:#bcd3ff;box-shadow:0 0 0 5px rgba(79,140,255,.22),0 0 18px rgba(79,140,255,.7)}
+  .hs:focus-visible{outline:2px solid #ffd166;outline-offset:2px}
+  .hs.paddle{border-style:dashed;border-radius:50%;background:rgba(79,140,255,.12)}
+  .hs .sub{position:absolute;top:calc(100% + 4px);white-space:nowrap;font:600 10.5px var(--font);color:var(--accent-ink);background:rgba(13,17,23,.85);padding:1px 6px;border-radius:5px}
+  /* DualSense targets */
+  .shoulders{display:flex;justify-content:space-between;padding:0 4%;margin-bottom:6px}
+  .shoulders div{display:flex;gap:6px}
+  .sh{font:700 11px var(--font);color:var(--muted);padding:3px 9px;border-radius:6px;border:1px solid var(--line-2);background:var(--panel-2);transition:all .15s}
+  .sh.soft{color:#86efc5;border-color:rgba(52,211,153,.45);background:rgba(52,211,153,.12)}
+  .sh.on{color:#06281c;background:var(--good);border-color:var(--good);box-shadow:0 0 12px rgba(52,211,153,.6)}
+  .ring{position:absolute;transform:translate(-50%,-50%);border:2.5px solid var(--good);border-radius:50%;box-shadow:0 0 0 4px rgba(52,211,153,.18),0 0 18px rgba(52,211,153,.75);pointer-events:none;transition:all .25s ease;opacity:0}
+  .ring.on{opacity:1}
+  .ring.rect{border-radius:14px}
+  .tgt-tag{position:absolute;transform:translate(-50%,-50%);font:800 10px var(--font);color:#06281c;background:var(--good);padding:2px 6px;border-radius:5px;pointer-events:none;transition:opacity .2s,transform .2s;box-shadow:0 2px 8px rgba(0,0,0,.5)}
+  .tgt-tag.dim{opacity:.28}
+  .tgt-tag.hide{opacity:0}
+  .mvfoot{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:12px;font-size:12.5px;color:var(--dim)}
+  .mvfoot b{color:var(--muted);font-weight:600}
+  .legend{display:inline-flex;align-items:center;gap:6px;margin-right:14px}
+  .legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
+  .maps{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;align-items:start}
+  @media (max-width:860px){.maps{grid-template-columns:1fr}}
+  .credit{font-size:11px;color:var(--dim);text-align:center;margin-top:6px}
+  .credit a{color:var(--dim);text-decoration:underline}
+
+  /* ---------- Mapping panel ---------- */
+  .maprow{display:grid;grid-template-columns:40px 1fr auto;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel-2);margin-bottom:8px;transition:border-color .15s,background .15s}
+  .maprow.hl{border-color:rgba(79,140,255,.5);background:#17233a}
+  .maprow .b{width:40px;height:40px;border-radius:9px;background:#1b2a44;border:1px solid #2d4a7a;color:#cfe3ff;display:grid;place-items:center;font-weight:800;font-size:13px}
+  .maprow .n{font-weight:600;line-height:1.25}
+  .maprow .d{color:var(--muted);font-size:12px}
+  select.map{appearance:none;background:#0d1117;border:1px solid var(--line-2);border-radius:8px;padding:8px 30px 8px 12px;font-size:13.5px;font-weight:600;min-width:138px;cursor:pointer;
+    background-image:linear-gradient(45deg,transparent 50%,#8a93a6 50%),linear-gradient(135deg,#8a93a6 50%,transparent 50%);
+    background-position:calc(100% - 16px) 50%,calc(100% - 11px) 50%;background-size:5px 5px;background-repeat:no-repeat}
+  select.map:focus{outline:2px solid var(--accent);outline-offset:1px}
+  .opt{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel-2);margin-bottom:8px}
+  .opt .t{font-weight:600}
+  .opt .h{color:var(--muted);font-size:12px;margin-top:1px}
+  .sw{position:relative;width:44px;height:26px;background:#2a313d;border-radius:999px;cursor:pointer;transition:background .15s;flex:none;border:1px solid var(--line)}
+  .sw::after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;transition:transform .15s;box-shadow:0 1px 3px rgba(0,0,0,.5)}
+  .sw[aria-checked="true"]{background:var(--accent);border-color:transparent}
+  .sw[aria-checked="true"]::after{transform:translateX(18px)}
+  .sw:focus-visible{outline:2px solid #ffd166;outline-offset:2px}
+  .mapfoot{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:14px;flex-wrap:wrap}
+  .mapfoot .st{color:var(--muted);font-size:12.5px}
+
+  /* ---------- Settings ---------- */
+  .set{display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;padding:14px 0;border-bottom:1px solid var(--line)}
+  .set:last-child{border-bottom:0;padding-bottom:0}
+  .set:first-child{padding-top:0}
+  .set .t{font-weight:600}
+  .set .h{color:var(--muted);font-size:12.5px;margin-top:2px;max-width:560px}
+  .seg{display:inline-flex;background:var(--panel-2);border:1px solid var(--line-2);border-radius:9px;padding:3px}
+  .seg button{padding:6px 12px;border-radius:7px;font-size:13px;font-weight:600;color:var(--muted)}
+  .seg button.on{background:var(--panel-3);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.4)}
+  .num{width:64px;background:#0d1117;border:1px solid var(--line-2);border-radius:8px;padding:7px 9px;font:600 13.5px var(--mono);text-align:right}
+  .sub-set{grid-column:1/-1;display:none;gap:16px;align-items:center;flex-wrap:wrap;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel-2);font-size:13px}
+  .sub-set.show{display:flex}
+  input[type=range]{accent-color:var(--accent);width:180px}
+  .foot{color:var(--dim);font-size:12px;text-align:center;margin-top:30px}
+
+  /* ---------- Toast ---------- */
+  .toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,16px);background:#141a24;border:1px solid var(--line-2);color:var(--fg);
+    padding:10px 16px;border-radius:999px;font-size:13.5px;font-weight:600;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:50;box-shadow:0 10px 30px rgba(0,0,0,.5)}
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+  .toast.ok{border-color:rgba(52,211,153,.4);color:#86efc5}
+  .toast.err{border-color:rgba(248,113,113,.4);color:#fca5a5}
+  @media (max-width:600px){
+    .grid3{grid-template-columns:1fr}.wrap{padding:18px 16px 80px}
+    body{overflow-x:hidden}
+    .top-in{padding:0 14px;gap:10px}.brand .ver{display:none}.btpill span:last-child{white-space:nowrap}
+    .sec-h{flex-direction:column;align-items:flex-start;gap:2px}
+    .maprow{grid-template-columns:40px 1fr}.maprow select.map{grid-column:1/-1;width:100%}
+    .set{grid-template-columns:1fr}.set .seg,.set .sw{justify-self:start}
+    .mapfoot,.padfoot{flex-direction:column;align-items:flex-start}
+    .bt .row .btn{flex:1}
+    .kpad{grid-template-columns:52px 1fr}.kpad .th{width:52px;height:38px}.kpad .acts{grid-column:1/-1}.kpad .acts .btn{flex:1}
+    .known-h{flex-direction:column;gap:2px}
+    .stage.front{padding:30px 16px 22px}
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="top-in">
+    <div class="brand"><span class="mark">O</span>OmniPad <span class="ver" id="ver">…</span></div>
+    <nav>
+      <a href="#controllers" class="on">Controllers</a>
+      <a href="#bluetooth">Bluetooth</a>
+      <a href="#mappings">Controller settings</a>
+      <a href="#settings">Settings</a>
+    </nav>
+    <div class="sp"></div>
+    <span class="btpill"><span class="dot" id="btDot"></span><span id="btText">Bluetooth off</span></span>
+    <a class="btn ghost sm" href="/api/log" target="_blank" rel="noopener">Logs</a>
+    <button class="btn danger sm" onclick="stopPayload()">Stop</button>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- ================= Controllers ================= -->
+  <section id="controllers">
+    <div class="sec-h"><h2>Controllers</h2><span class="hint" id="slotHint">Virtual DualSense slots the console sees</span></div>
+    <div class="grid3" id="slots"></div>
+  </section>
+
+  <!-- ================= Bluetooth ================= -->
+  <section id="bluetooth">
+    <div class="sec-h"><h2>Bluetooth</h2><span class="hint">OmniPad takes over the radio while a pad is paired</span></div>
+    <div class="card">
+      <div class="bt">
+        <div class="ico">&#x2B22;</div>
+        <div>
+          <div class="st" id="btState">Radio released</div>
+          <div class="sub" id="btSub">Press <b>Pair controller</b>, then hold the pairing button on your pad until its LED blinks fast.</div>
+        </div>
+        <div class="row">
+          <button class="btn primary" id="pairBtn" onclick="btScan()">Pair controller</button>
+          <button class="btn" onclick="releaseNow()" title="Close the radio so a native DualSense can reconnect. Virtual BT pads drop.">Release radio</button>
+          <button class="btn danger" onclick="disconnectAll()">Disconnect all</button>
+        </div>
+      </div>
+      <div class="disc" id="disc">
+        <div class="row" style="justify-content:space-between">
+          <span style="font-weight:600;font-size:13.5px">Nearby gamepads</span>
+          <span class="hint" id="scanLeft"></span>
+        </div>
+        <div id="devList"><div class="none">Searching… put your pad in pairing mode.</div></div>
+      </div>
+      <div class="known">
+        <div class="known-h"><b>Remembered controllers</b><span>Used it with a phone or PC? Hit Reconnect to bring it back here.</span></div>
+        <div id="knownList"><div class="none">Loading…</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= Mappings ================= -->
+  <section id="mappings">
+    <div class="sec-h"><h2>Controller settings</h2><span class="hint">Connected controllers &middot; saved per controller &middot; applies right away</span></div>
+    <div class="pick" id="cfgPick"></div>
+    <div class="card" id="cfgEmpty">
+      <div class="cfg-empty">
+        <div class="t">No controllers connected</div>
+        <div class="h">Connect a controller over Bluetooth or USB and its settings show up here, saved separately for each one. An 8BitDo Ultimate 2 on Bluetooth also gets its L4, R4 and back paddles remapped here.</div>
+      </div>
+    </div>
+    <div class="card" id="cfgSimple" style="display:none">
+      <div class="simple-h"><b id="simpleName">Controller</b><span id="simpleMac"></span></div>
+      <div class="opt">
+        <div><div class="t">Small motor</div><div class="h">Drive the secondary rumble motor too. Turn it off if this pad buzzes or rattles.</div></div>
+        <div class="sw" id="sw-small2" tabindex="0" role="switch" aria-checked="true" aria-label="Small motor"></div>
+      </div>
+      <div class="h" id="simpleNote" style="display:none;color:var(--dim);font-size:12.5px;margin:2px 2px 0">USB controllers have no unique ID, so this applies to every connected pad of this model. Rumble reaches USB pads through Game rumble via Avcap2 in Settings.</div>
+      <div class="mapfoot">
+        <span class="st" id="simpleStatus"></span>
+        <button class="btn primary" id="saveSimple">Save for this controller</button>
+      </div>
+    </div>
+    <div id="cfgBody" style="display:none">
+    <div class="card">
+      <div class="mv">
+        <div class="mv-col">
+          <div class="mv-h">Your 8BitDo <span>click a blue button</span></div>
+          <div class="stage top">
+            <span class="cap">Top edge</span>
+            <div class="in">
+              <img src="/img/u2-top.webp" alt="8BitDo Ultimate 2, top edge" width="640" height="267">
+              <button class="hs" id="hs-l4" data-key="l4" style="left:25.8%;top:46.5%;width:9.5%;height:19%" aria-label="L4">L4</button>
+              <button class="hs" id="hs-r4" data-key="r4" style="left:73.6%;top:46.5%;width:9.5%;height:19%" aria-label="R4">R4</button>
+            </div>
+          </div>
+          <div class="stage front">
+            <span class="cap">Front &middot; paddles are on the back</span>
+            <div class="in">
+              <img src="/img/u2-front.webp" alt="8BitDo Ultimate 2, front" width="760" height="536">
+              <button class="hs paddle" id="hs-pl" data-key="pl" style="left:17%;top:80%;width:13%;aspect-ratio:1" aria-label="PL back paddle">PL<span class="sub">back left</span></button>
+              <button class="hs paddle" id="hs-pr" data-key="pr" style="left:83%;top:80%;width:13%;aspect-ratio:1" aria-label="PR back paddle">PR<span class="sub">back right</span></button>
+            </div>
+          </div>
+        </div>
+        <div class="mv-arrow">&rarr;</div>
+        <div class="mv-col">
+          <div class="mv-h">What the PS5 sees <span>DualSense</span></div>
+          <div class="stage">
+            <div class="shoulders">
+              <div><span class="sh" data-t="l2">L2</span><span class="sh" data-t="l1">L1</span></div>
+              <div><span class="sh" data-t="r1">R1</span><span class="sh" data-t="r2">R2</span></div>
+            </div>
+            <div class="in" id="dsStage">
+              <img src="/img/dualsense.webp" alt="DualSense controller" width="760" height="514">
+              <div class="ring" id="ring"></div>
+            </div>
+          </div>
+          <div class="credit">DualSense photo: <a href="https://commons.wikimedia.org/wiki/File:KontrolerDualSense.jpg" target="_blank" rel="noopener">Wikimedia Commons</a>, CC BY-SA 4.0</div>
+        </div>
+      </div>
+      <div class="mvfoot">
+        <span><span class="legend"><i style="background:#4f8cff"></i>8BitDo extra</span><span class="legend"><i style="background:#34d399"></i>DualSense input it fires</span></span>
+        <span><b>&larr; &rarr;</b> cycle &middot; <b>Enter</b> edit</span>
+      </div>
+    </div>
+
+    <div class="maps">
+      <div class="card"><div id="maprows"></div></div>
+      <div class="card">
+        <div class="opt">
+          <div><div class="t">Motion (gyro)</div><div class="h">Forward the 8BitDo gyroscope as DualSense motion.</div></div>
+          <div class="sw" id="sw-motion" tabindex="0" role="switch" aria-checked="false" aria-label="Motion"></div>
+        </div>
+        <div class="opt">
+          <div><div class="t">Small motor</div><div class="h">Also drive the secondary rumble motor. Buzzes faintly on some pads.</div></div>
+          <div class="sw" id="sw-small" tabindex="0" role="switch" aria-checked="false" aria-label="Small motor"></div>
+        </div>
+        <div class="mapfoot">
+          <span class="st" id="mapStatus">Loading…</span>
+          <span class="row">
+            <button class="btn ghost" id="resetMap">Reset</button>
+            <button class="btn primary" id="saveMap">Save for this controller</button>
+          </span>
+        </div>
+      </div>
+    </div>
+    </div>
+    <div class="card" id="remapCard" style="display:none;margin-top:16px">
+      <div class="remap-h">
+        <div><b>Button mapping</b>
+          <div class="h" id="remapHint">OmniPad detects this controller and maps its buttons to the DualSense automatically. Override any button below; everything left on Auto keeps the detected layout.</div></div>
+        <span class="row">
+          <button class="btn ghost sm" id="remapReset">Reset all to Auto</button>
+          <button class="btn primary sm" id="remapSave">Save for this controller</button>
+        </span>
+      </div>
+      <div class="remap-grid" id="remapGrid"></div>
+    </div>
+  </section>
+
+  <!-- ================= Settings ================= -->
+  <section id="settings">
+    <div class="sec-h"><h2>Settings</h2></div>
+    <div class="card">
+      <div class="set">
+        <div><div class="t">Emulate as</div><div class="h">Which Sony pad the console thinks is attached. Reconnect the pad after changing.</div></div>
+        <div class="seg" id="vpadSeg">
+          <button data-v="3" onclick="setVpadType(3)">DualSense</button>
+          <button data-v="2" onclick="setVpadType(2)">DualShock 4</button>
+        </div>
+      </div>
+      <div class="set">
+        <div><div class="t">Game rumble via Avcap2</div><div class="h">Tap the console's haptic audio stream so rumble reaches Bluetooth pads even in games that never call the vibration API. Experimental.</div></div>
+        <div class="sw" id="sw-haptic" tabindex="0" role="switch" aria-checked="false" aria-label="Game rumble"></div>
+        <div class="sub-set" id="hapticTune">
+          <span style="color:var(--muted)">Gain</span>
+          <input id="hapticGain" type="range" min="0.1" max="4" step="0.1" value="1" oninput="gainLbl.textContent=(+this.value).toFixed(1)+'×'" onchange="saveHapticSettings()">
+          <b id="gainLbl" style="font-family:var(--mono);font-weight:600">1.0×</b>
+          <label class="row" style="gap:8px;cursor:pointer;margin-left:auto"><input type="checkbox" id="hapticEager" onchange="saveHapticSettings()" style="accent-color:var(--accent);width:16px;height:16px"> Keep stream warm (lower latency, a little CPU)</label>
+        </div>
+      </div>
+      <div class="set">
+        <div><div class="t">Release radio when idle</div><div class="h">If no Bluetooth pad is connected for this long, hand the radio back so a native DualSense can reconnect. 0 never releases.</div></div>
+        <span class="row" style="gap:8px"><input class="num" id="idleMin" type="number" min="0" max="240" value="5" onchange="setIdleRelease(this.value)"><span style="color:var(--muted);font-size:13px">min</span></span>
+      </div>
+    </div>
+    <div class="foot" id="footer">OmniPad PS5</div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+"use strict";
+const $ = id => document.getElementById(id);
+const toastEl = $("toast"); let toastT;
+window.toast = function(msg, kind){
+  toastEl.textContent = msg; toastEl.className = "toast show " + (kind||"");
+  clearTimeout(toastT); toastT = setTimeout(()=>toastEl.classList.remove("show"), 2200);
+};
+const api = (p, m) => fetch(p, m ? {method:m} : undefined);
+const jget = async p => { const r = await api(p); if (!r.ok) throw new Error("HTTP "+r.status); return r.json(); };
+
+/* ---------- Controllers ---------- */
+const CONN = {1:["blue","Bluetooth"],2:["blue","Bluetooth LE"],3:["green","USB wired"],4:["blue","2.4G dongle"],5:["blue","Network"]};
+function renderSlots(d){
+  const root = $("slots"); root.innerHTML = "";
+  let live = 0;
+  d.slots.forEach((s,i)=>{
+    const el = document.createElement("div");
+    const isLive = s.status===3, pending = s.status===1||s.status===2, failed = s.status===4;
+    el.className = "slot card " + (isLive?"live":"empty");
+    if (isLive) live++;
+    const c = CONN[s.conn];
+    const batt = (s.battery>=0 && s.battery<=100) ? `<span class="batt"><i><b style="width:${Math.max(2,Math.round(s.battery/100*18))}px"></b></i>${s.battery}%${s.charging?" ⚡":""}</span>` : "—";
+    if (isLive){
+      const u2 = isU2(s.vid, s.pid);
+      el.innerHTML = `
+        <div class="who"><span class="pnum">Player ${i+1}</span><span class="dot on"></span></div>
+        <div class="pic"><img src="${padImg(s.vid, s.pid)}" alt=""></div>
+        <div class="name">${esc(u2 ? "8BitDo Ultimate 2" : (s.name||"Virtual DualSense"))}</div>
+        <div class="tags">${c?`<span class="tag ${c[0]}">${c[1]}</span>`:""}<span class="tag">250 Hz</span></div>
+        <div class="kv"><span>Battery</span><b>${batt}</b><span>Handle</span><b>${s.handle>=0?s.handle:(s.alt_handle>0?s.alt_handle:"—")}</b><span>User</span><b>${s.user_id?"0x"+s.user_id.toString(16):"primary"}</b><span>Frames</span><b>${(s.injected||0).toLocaleString()}</b></div>
+        ${s.id ? `<div class="foot"><button class="btn sm" onclick="openCfg('${esc(s.id)}')">Settings</button></div>` : ""}`;
+    } else {
+      el.innerHTML = `
+        <div class="who"><span class="pnum">Player ${i+1}</span><span class="dot ${pending?"busy":""}"></span></div>
+        <div class="pic"><img src="/img/dualsense.webp" alt=""></div>
+        <div class="empty-txt">${pending?"Registering with the console…":failed?"<span style='color:var(--bad)'>Registration failed</span>":"Waiting for a controller"}</div>`;
+    }
+    root.appendChild(el);
+  });
+  liveSlots = d.slots; syncCfgPads();
+  $("slotHint").textContent = live ? `${live} of ${d.slots.length} slots in use` : "Virtual DualSense slots the console sees";
+  if (d.version) { $("ver").textContent = "v"+d.version+" · b"+d.build; $("footer").textContent = "OmniPad PS5 v"+d.version+" build "+d.build; }
+}
+const isU2 = (vid, pid) => vid===0x2DC8 && pid===0x6012;
+const padImg = (vid, pid) => isU2(vid, pid) ? "/img/u2-front.webp" : "/img/dualsense.webp";
+let liveSlots = [];
+function esc(s){ return String(s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+async function refreshStatus(){ try { renderSlots(await jget("/api/status")); } catch(e){} }
+
+/* ---------- Bluetooth ---------- */
+let scanning = false;
+async function refreshBt(){
+  try {
+    const s = await jget("/api/bt/status");
+    const dot = $("btDot");
+    if (s.pairing){
+      dot.className = "dot busy"; $("btText").textContent = "Pairing · "+s.pairing_left+"s";
+      $("btState").textContent = "Searching for controllers"; $("btSub").textContent = "Hold the pairing button on your pad until its LED blinks fast. "+s.pairing_left+" s left.";
+      $("scanLeft").textContent = s.pairing_left+" s left"; scanning = true; $("disc").classList.add("show");
+    } else if (s.up){
+      dot.className = "dot on"; $("btText").textContent = "Bluetooth on";
+      $("btState").textContent = "Radio owned by OmniPad"; $("btSub").textContent = "Paired pads reconnect automatically. Release the radio to let a native DualSense back in.";
+      if (scanning) { scanning = false; }
+    } else {
+      dot.className = "dot"; $("btText").textContent = "Bluetooth off";
+      $("btState").textContent = "Radio released"; $("btSub").innerHTML = "Press <b>Pair controller</b>, then hold the pairing button on your pad until its LED blinks fast.";
+      scanning = false; $("disc").classList.remove("show");
+    }
+  } catch(e){}
+}
+const codLabel = cod => { const m=(cod>>2)&15; return m===2?"Gamepad":m===1?"Joystick":"HID"; };
+async function refreshDiscovered(){
+  if (!scanning) return;
+  try {
+    const d = await jget("/api/bt/discovered");
+    const list = $("devList");
+    if (!d.devices || !d.devices.length){ list.innerHTML = '<div class="none">Nothing yet. Make sure the pad is in pairing mode and close to the console.</div>'; return; }
+    list.innerHTML = d.devices.map(x=>`<div class="dev"><code>${esc(x.mac)}</code><span class="tag blue">${codLabel(x.cod)}</span><button class="btn sm primary" onclick="btPairMac('${esc(x.mac)}')">Pair</button></div>`).join("");
+  } catch(e){}
+}
+window.btScan = async function(){
+  const b = $("pairBtn"); b.disabled = true;
+  try { await api("/api/bt/scan?seconds=90","POST"); scanning = true; $("disc").classList.add("show"); toast("Scanning for 90 s"); }
+  catch(e){ toast("Scan failed: "+e.message,"err"); }
+  setTimeout(()=>b.disabled=false, 1500); refreshBt(); refreshDiscovered();
+};
+window.btPairMac = async function(mac){
+  try { await api("/api/bt/pair?mac="+mac+"&seconds=120","POST"); toast("Pairing with "+mac); } catch(e){ toast("Pair failed","err"); }
+  refreshBt();
+};
+window.releaseNow = async function(){ try { await api("/api/bt/disable","POST"); toast("Radio released — your DualSense can reconnect","ok"); } catch(e){} refreshBt(); };
+window.disconnectAll = async function(){ await api("/api/disconnect?slot=-1","POST"); toast("Disconnected all virtual pads"); refreshStatus(); };
+window.stopPayload = async function(){
+  if (!confirm("Stop OmniPad?\n\nVirtual pads disconnect, Bluetooth is shut down cleanly, then the payload exits. Your native DualSense keeps working.")) return;
+  try { toast("Stopping: disabling Bluetooth…"); await api("/api/bt/disable","POST"); await new Promise(r=>setTimeout(r,1500)); toast("Stopping: exiting…"); await api("/api/exit","POST"); } catch(e){}
+  setTimeout(()=>{ document.body.innerHTML = '<div style="padding:60px 20px;text-align:center;color:#8a93a6;font-family:system-ui"><h2 style="color:#e9edf3;margin-bottom:8px">OmniPad stopped</h2>Your native DualSense should keep working. If it refuses to pair, hard-reboot the console.</div>'; }, 2500);
+};
+
+/* ---------- Settings ---------- */
+window.setVpadType = async function(t){
+  try { const d = await (await api("/api/vpad/type?type="+t,"POST")).json(); markSeg(t); toast("Emulating "+d.name+" — reconnect the pad to apply","ok"); } catch(e){}
+};
+function markSeg(t){ [...$("vpadSeg").children].forEach(b=>b.classList.toggle("on", b.dataset.v==String(t))); }
+async function refreshVpadType(){ try { markSeg((await jget("/api/vpad/type")).type); } catch(e){} }
+
+function wireSwitch(id, onChange){
+  const el = $(id);
+  const set = v => el.setAttribute("aria-checked", v?"true":"false");
+  const flip = () => { const v = el.getAttribute("aria-checked")!=="true"; set(v); onChange(v); };
+  el.addEventListener("click", flip);
+  el.addEventListener("keydown", e=>{ if (e.key===" "||e.key==="Enter"){ e.preventDefault(); flip(); } });
+  return set;
+}
+const setHapticSw = wireSwitch("sw-haptic", async on=>{
+  try { const d = await (await api("/api/bt/haptic?on="+(on?1:0),"POST")).json(); $("hapticTune").classList.toggle("show", !!d.haptic); toast("Game rumble "+(d.haptic?"on":"off")); } catch(e){}
+});
+async function refreshHaptic(){
+  try {
+    const d = await jget("/api/bt/haptic"); setHapticSw(!!d.haptic); $("hapticTune").classList.toggle("show", !!d.haptic);
+    const s = await jget("/api/bt/haptic/settings");
+    $("hapticGain").value = s.gain; $("gainLbl").textContent = (+s.gain).toFixed(1)+"×"; $("hapticEager").checked = !!s.eager;
+  } catch(e){}
+}
+window.saveHapticSettings = async function(){
+  try { await api("/api/bt/haptic/settings?gain="+$("hapticGain").value+"&eager="+($("hapticEager").checked?1:0),"POST"); } catch(e){}
+};
+window.setIdleRelease = async function(m){ try { await api("/api/bt/idle_release?minutes="+m,"POST"); toast("Idle release: "+(m>0?m+" min":"never")); } catch(e){} };
+async function refreshIdle(){ try { $("idleMin").value = (await jget("/api/bt/idle_release")).minutes; } catch(e){} }
+
+/* ---------- Mappings ---------- */
+const OUTPUTS = ["cross","circle","square","triangle","l1","r1","l2","r2","l3","r3","create","options","ps","touchpad","up","down","left","right","none"];
+const PRETTY = {cross:"Cross ✕",circle:"Circle ○",square:"Square □",triangle:"Triangle △",l1:"L1",r1:"R1",l2:"L2",r2:"R2",l3:"L3 (left stick click)",r3:"R3 (right stick click)",create:"Create",options:"Options",ps:"PS",touchpad:"Touchpad",up:"D-pad up",down:"D-pad down",left:"D-pad left",right:"D-pad right",none:"Nothing"};
+const DEFAULTS = {l4:"touchpad",r4:"touchpad",pl:"l3",pr:"r3",motion:"off",small_motor:"off"};
+const EXTRAS = [
+  {key:"l4",label:"L4",desc:"Top edge, inside L1"},
+  {key:"r4",label:"R4",desc:"Top edge, inside R1"},
+  {key:"pl",label:"PL",desc:"Back paddle, left"},
+  {key:"pr",label:"PR",desc:"Back paddle, right"}];
+/* Where each DualSense input sits on the photo, in % of the image box.
+   w = ring width in % of image width; rect = touchpad box. Shoulders use the chips above. */
+const DS = {
+  up:{x:14.6,y:17.5,w:6.5}, down:{x:14.6,y:35,w:6.5}, left:{x:8.3,y:26.5,w:6.5}, right:{x:21,y:26,w:6.5},
+  triangle:{x:84.5,y:13.5,w:8.5}, circle:{x:93,y:27,w:8.5}, cross:{x:85,y:38.5,w:8.5}, square:{x:76.5,y:26,w:8.5},
+  touchpad:{x:49,y:17,w:43,h:31,rect:1}, create:{x:23.6,y:8.5,w:4.6}, options:{x:75.4,y:8.5,w:4.6},
+  ps:{x:49.2,y:48.5,w:6.5}, l3:{x:31,y:48.5,w:15.5}, r3:{x:69.2,y:48.5,w:15.5}};
+const MODEL_ID = "2DC8_6012";            /* older, per-model settings file */
+let cfgMac = null, dirty = false, cfgPadsKey = "";
+const macId = mac => mac.replace(/:/g, "");
+const state = Object.assign({}, DEFAULTS);
+let focusIdx = -1;
+
+const rows = $("maprows");
+const dsStage = $("dsStage"), ring = $("ring");
+const tags = {};
+EXTRAS.forEach((ex,i)=>{
+  const r = document.createElement("div"); r.className = "maprow"; r.dataset.key = ex.key;
+  r.innerHTML = `<div class="b">${ex.label}</div><div><div class="n">${ex.label}</div><div class="d">${ex.desc}</div></div>
+    <select class="map" aria-label="${ex.label} fires">${OUTPUTS.map(o=>`<option value="${o}">${PRETTY[o]}</option>`).join("")}</select>`;
+  const sel = r.querySelector("select");
+  sel.addEventListener("change", ()=>{ state[ex.key] = sel.value; dirty = true; renderMap(); });
+  sel.addEventListener("focus", ()=>setFocus(i));
+  r.addEventListener("mouseenter", ()=>setFocus(i));
+  rows.appendChild(r);
+  const hs = $("hs-"+ex.key);
+  hs.addEventListener("click", ()=>{ setFocus(i); sel.focus(); try{ sel.showPicker && sel.showPicker(); }catch(e){} });
+  hs.addEventListener("focus", ()=>setFocus(i));
+  hs.addEventListener("mouseenter", ()=>setFocus(i));
+  const t = document.createElement("span"); t.className = "tgt-tag"; t.textContent = ex.label; dsStage.appendChild(t); tags[ex.key] = t;
+});
+const setMotion = wireSwitch("sw-motion", v=>{ state.motion = v?"on":"off"; dirty = true; });
+const setSmall  = wireSwitch("sw-small",  v=>{ state.small_motor = v?"on":"off"; dirty = true; });
+
+function setFocus(i){ focusIdx = i; renderFocus(); }
+function placeTags(){
+  /* Tags for extras that land on the same input are spread side by side. */
+  const groups = {};
+  EXTRAS.forEach(ex=>{ (groups[state[ex.key]] = groups[state[ex.key]] || []).push(ex.key); });
+  /* Shoulder targets have no spot on the photo: their chips say who lands there. */
+  document.querySelectorAll(".sh").forEach(c=>{
+    const who = EXTRAS.filter(ex=>state[ex.key]===c.dataset.t).map(ex=>ex.label);
+    c.textContent = c.dataset.t.toUpperCase() + (who.length ? " ← " + who.join(" ") : "");
+    c.classList.toggle("soft", who.length > 0);
+  });
+  EXTRAS.forEach(ex=>{
+    const t = tags[ex.key], target = state[ex.key], pos = DS[target];
+    if (!pos){ t.classList.add("hide"); return; }
+    t.classList.remove("hide");
+    const g = groups[target], k = g.indexOf(ex.key), spread = (k - (g.length-1)/2) * 8.5;
+    t.style.left = (pos.x + spread) + "%";
+    t.style.top = pos.y + "%";
+  });
+}
+function renderFocus(){
+  const cur = focusIdx >= 0 ? EXTRAS[focusIdx] : null;
+  EXTRAS.forEach((ex,i)=>{
+    const on = i===focusIdx;
+    $("hs-"+ex.key).classList.toggle("sel", on);
+    rows.children[i].classList.toggle("hl", on);
+    tags[ex.key].classList.toggle("dim", !!cur && !on);
+  });
+  const target = cur ? state[cur.key] : null;
+  document.querySelectorAll(".sh").forEach(c=>c.classList.toggle("on", !!target && c.dataset.t===target));
+  const pos = target && DS[target];
+  if (pos){
+    ring.className = "ring on" + (pos.rect ? " rect" : "");
+    ring.style.left = pos.x+"%"; ring.style.top = pos.y+"%"; ring.style.width = pos.w+"%";
+    ring.style.height = pos.rect ? pos.h+"%" : ""; ring.style.aspectRatio = pos.rect ? "auto" : "1";
+  } else ring.className = "ring";
+}
+function renderMap(){
+  EXTRAS.forEach(ex=>{ rows.querySelector(`[data-key="${ex.key}"] select`).value = state[ex.key]; });
+  setMotion(state.motion==="on"); setSmall(state.small_motor==="on");
+  placeTags(); renderFocus();
+}
+document.addEventListener("keydown", e=>{
+  const a = document.activeElement;
+  if (!a || !a.classList.contains("hs")) return;
+  if (e.key==="ArrowRight"||e.key==="ArrowDown"){ focusIdx=(focusIdx+1)%EXTRAS.length; $("hs-"+EXTRAS[focusIdx].key).focus(); e.preventDefault(); }
+  else if (e.key==="ArrowLeft"||e.key==="ArrowUp"){ focusIdx=(focusIdx-1+EXTRAS.length)%EXTRAS.length; $("hs-"+EXTRAS[focusIdx].key).focus(); e.preventDefault(); }
+});
+/* Connected controllers only (Bluetooth and USB). `id` names the settings file:
+   the BT address for Bluetooth pads, USB_VVVV_PPPP for USB pads (per model). */
+const CONN_NAME = {1:"Bluetooth",2:"Bluetooth LE",3:"USB",4:"2.4G dongle"};
+function cfgPads(){
+  const out = [], names = {};
+  knownPads.forEach(p=>{ names[p.mac] = p.name; });
+  liveSlots.forEach((sl,i)=>{
+    if (sl.status!==3 || !sl.id) return;
+    out.push({id:sl.id, mac:sl.mac, vid:sl.vid, pid:sl.pid, conn:sl.conn, usb:!sl.mac, player:i+1,
+              name:(sl.mac && names[sl.mac]) || sl.name});
+  });
+  return out;
+}
+/* The picture-based mapping screen is for the Ultimate 2 over Bluetooth, where its extra buttons are reported. */
+const isU2Map = p => !!p && !p.usb && isU2(p.vid, p.pid);
+const padLabel = p => isU2(p.vid, p.pid) ? "8BitDo Ultimate 2" : (p.name || "Controller");
+function showCfgView(){
+  const p = cfgPads().find(x=>x.id===cfgMac);
+  const u2 = isU2Map(p);
+  $("cfgEmpty").style.display = p ? "none" : "";
+  $("cfgBody").style.display = u2 ? "" : "none";
+  $("cfgSimple").style.display = p && !u2 ? "" : "none";
+  $("remapCard").style.display = p ? "" : "none";
+  if (p) $("remapHint").textContent = (u2
+      ? "The paddles and L4/R4 above are applied first. Then any button overridden here is swapped; buttons left on Auto keep the detected layout."
+      : "OmniPad detects this controller and maps its buttons to the DualSense automatically. Override any button below; everything left on Auto keeps the detected layout.")
+      + (p.usb ? " USB pads share settings per model." : "");
+  if (p && !u2){
+    $("simpleName").textContent = `Player ${p.player} · ${padLabel(p)}`;
+    $("simpleMac").textContent = p.usb ? `${CONN_NAME[p.conn]||"USB"} · ${hex4(p.vid)}:${hex4(p.pid)}` : p.mac;
+    $("simpleNote").style.display = p.usb ? "" : "none";
+  }
+}
+function syncCfgPads(){
+  const pads = cfgPads();
+  const key = pads.map(p=>p.id+p.player).join("|") + "#" + cfgMac;
+  if (!pads.find(p=>p.id===cfgMac)){
+    if (pads.length) { selectCfg(pads[0].id, true); return; }
+    cfgMac = null;
+  }
+  if (key === cfgPadsKey) return;
+  cfgPadsKey = key;
+  showCfgView();
+  $("cfgPick").innerHTML = pads.map(p=>`<button class="${p.id===cfgMac?"on":""}" onclick="selectCfg('${esc(p.id)}')">
+      ${isU2Map(p) ? '<img src="/img/u2-front.webp" alt="">' : `<span class="gi">${GENERIC_PAD}</span>`}
+      <span>Player ${p.player} &middot; ${esc(padLabel(p))}<small>${esc(p.usb ? (CONN_NAME[p.conn]||"USB") + " " + hex4(p.vid)+":"+hex4(p.pid) : p.mac)}</small></span>
+      <span class="dot on" title="Connected"></span></button>`).join("");
+}
+window.selectCfg = function(id, auto){
+  if (id === cfgMac) return;
+  if (dirty && !auto && !confirm("Discard unsaved changes?")) return;
+  cfgMac = id; dirty = false; cfgPadsKey = "";
+  syncCfgPads();
+  const p = cfgPads().find(x=>x.id===id);
+  if (isU2Map(p)) loadMap(); else if (p) loadSimple();
+};
+window.openCfg = function(id){ selectCfg(id); document.getElementById("mappings").scrollIntoView({behavior:"smooth"}); };
+
+/* ---- Button overrides (remap_<from> = <to> in the controller's settings file) ---- */
+const RM = ["cross","circle","square","triangle","l1","r1","l2","r2","l3","r3","create","options","ps","touchpad","up","down","left","right"];
+let remap = {};            /* from -> to, only overridden buttons */
+let cfgLoaded = {};        /* every key last loaded for this controller, kept on save */
+function setRemapFrom(j){
+  remap = {};
+  if (j) for (const k of Object.keys(j)) if (k.startsWith("remap_")) {
+    const from = k.slice(6), to = j[k];
+    if (RM.includes(from) && (RM.includes(to) || to==="none") && to!==from) remap[from] = to;
+  }
+  renderRemap();
+}
+function renderRemap(){
+  const grid = $("remapGrid");
+  if (!grid.children.length){
+    grid.innerHTML = RM.map(b=>`<div class="rm" data-b="${b}"><span class="n">${PRETTY[b].replace(/ \(.*\)/,"")}</span>
+      <select class="map" aria-label="${PRETTY[b]} sends">
+        <option value="">Auto (${PRETTY[b].replace(/ \(.*\)/,"")})</option>
+        ${RM.filter(o=>o!==b).map(o=>`<option value="${o}">${PRETTY[o].replace(/ \(.*\)/,"")}</option>`).join("")}
+        <option value="none">Nothing</option></select></div>`).join("");
+    grid.querySelectorAll(".rm").forEach(row=>{
+      row.querySelector("select").addEventListener("change", e=>{
+        const b = row.dataset.b, v = e.target.value;
+        if (v) remap[b] = v; else delete remap[b];
+        dirty = true; renderRemap();
+      });
+    });
+  }
+  grid.querySelectorAll(".rm").forEach(row=>{
+    const b = row.dataset.b, v = remap[b] || "";
+    row.querySelector("select").value = v;
+    row.classList.toggle("ov", !!v);
+  });
+}
+$("remapReset").addEventListener("click", ()=>{ remap = {}; dirty = true; renderRemap(); toast("All buttons back to Auto — save to keep"); });
+$("remapSave").addEventListener("click", ()=>saveCfg($("remapSave")));
+
+/* One save for everything this controller has: the shown view's fields,
+   the button overrides, and any other key already in its file. */
+async function saveCfg(btn){
+  if (!cfgMac) return;
+  const p = cfgPads().find(x=>x.id===cfgMac);
+  const body = {};
+  for (const k of Object.keys(cfgLoaded)) if (!k.startsWith("remap_")) body[k] = cfgLoaded[k];
+  if (isU2Map(p)) Object.assign(body, {l4:state.l4,r4:state.r4,pl:state.pl,pr:state.pr,motion:state.motion,small_motor:state.small_motor});
+  else body.small_motor = simpleSmall;
+  for (const k of Object.keys(remap)) body["remap_"+k] = remap[k];
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch("/api/mapping/"+macId(cfgMac),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if (!r.ok) throw new Error("HTTP "+r.status);
+    cfgLoaded = body; dirty = false;
+    toast("Saved — applied now","ok");
+    const st = isU2Map(p) ? $("mapStatus") : $("simpleStatus");
+    st.textContent = "Saved for this controller. Applied now.";
+  } catch(e){ toast("Save failed: "+e.message,"err"); }
+  if (btn) btn.disabled = false;
+}
+
+async function fetchMap(id){
+  const r = await api("/api/mapping/"+id);
+  if (r.status===404) return null;
+  if (!r.ok) throw new Error("HTTP "+r.status);
+  return r.json();
+}
+async function loadMap(){
+  if (!cfgMac) return;
+  const mac = cfgMac;
+  Object.assign(state, DEFAULTS);
+  let msg;
+  try {
+    let j = await fetchMap(macId(mac));
+    if (j) msg = "Saved settings for this controller.";
+    else { j = await fetchMap(MODEL_ID); msg = j ? "Using the shared 8BitDo settings. Save to keep them for this controller only." : "Defaults. Nothing saved for this controller yet."; }
+    if (mac !== cfgMac) return;                   /* switched meanwhile */
+    if (j) for (const k of Object.keys(DEFAULTS)) if (typeof j[k]==="string") state[k]=j[k];
+    cfgLoaded = j || {}; setRemapFrom(j);
+  } catch(e){ msg = "Could not load settings ("+e.message+")."; cfgLoaded = {}; setRemapFrom(null); }
+  $("mapStatus").textContent = msg;
+  dirty = false;
+  renderMap();
+}
+$("saveMap").addEventListener("click", ()=>saveCfg($("saveMap")));
+$("resetMap").addEventListener("click", ()=>{ Object.assign(state, DEFAULTS); dirty = true; renderMap(); toast("Reset to defaults — save to keep"); });
+
+/* Non-8BitDo controllers: only the small motor, default on. */
+let simpleSmall = "on";
+const setSmall2 = wireSwitch("sw-small2", v=>{ simpleSmall = v ? "on" : "off"; dirty = true; });
+async function loadSimple(){
+  if (!cfgMac) return;
+  const mac = cfgMac;
+  let msg;
+  simpleSmall = "on";
+  try {
+    const j = await fetchMap(macId(mac));
+    if (mac !== cfgMac) return;
+    if (j && typeof j.small_motor === "string") simpleSmall = j.small_motor;
+    cfgLoaded = j || {}; setRemapFrom(j);
+    msg = j ? "Saved settings for this controller." : "Default: both motors on.";
+  } catch(e){ msg = "Could not load settings ("+e.message+")."; cfgLoaded = {}; setRemapFrom(null); }
+  setSmall2(simpleSmall === "on");
+  $("simpleStatus").textContent = msg;
+  dirty = false;
+}
+$("saveSimple").addEventListener("click", ()=>saveCfg($("saveSimple")));
+
+/* ---------- Remembered controllers ---------- */
+const GENERIC_PAD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 8h12a4 4 0 0 1 3.9 4.9l-1 4.3a2.3 2.3 0 0 1-4 1L15 16H9l-1.9 2.2a2.3 2.3 0 0 1-4-1l-1-4.3A4 4 0 0 1 6 8z"/><path d="M8 11v3M6.5 12.5h3"/><circle cx="16" cy="11.5" r=".6" fill="currentColor"/><circle cx="17.5" cy="13.5" r=".6" fill="currentColor"/></svg>';
+function padThumb(p){ return `<img src="${padImg(p.vid, p.pid)}" alt="">`; }
+const hex4 = v => v.toString(16).toUpperCase().padStart(4,"0");
+let knownPads = [], rc = {phase:"idle"};
+async function refreshKnown(){
+  try { const d = await jget("/api/bt/paired"); knownPads = d.pads || []; renderKnown(); syncCfgPads(); } catch(e){}
+}
+async function refreshRc(){
+  try {
+    const prev = rc.phase;
+    rc = await jget("/api/bt/reconnect");
+    if (prev !== rc.phase){
+      if (rc.phase==="connected") toast("Controller reconnected","ok");
+      if (rc.phase==="repairing") toast(rc.reason==="key_lost" ? "It was paired elsewhere — hold its pairing button" : "No answer — hold its pairing button to re-pair");
+      refreshKnown(); refreshBt();
+    }
+    renderKnown();
+  } catch(e){}
+}
+function rcLine(p){
+  if (rc.phase==="idle" || rc.mac!==p.mac) return null;
+  if (rc.phase==="calling") return {cls:"", busy:1, pct:rc.left/30*100,
+    html:`<b>Calling the pad…</b> make sure it is switched on and not connected to another device. ${rc.left}s`};
+  if (rc.phase==="repairing") return {cls:"warn", busy:1, pct:rc.left/90*100,
+    html: (rc.reason==="key_lost" ? "<b>It was paired with another device.</b> " : "<b>No answer.</b> ") +
+          `Hold the pad's pairing button until its LED blinks fast. ${rc.left}s`};
+  if (rc.phase==="connected") return {cls:"ok", html:"<b>Connected.</b> It is back on this console."};
+  if (rc.phase==="failed") return {cls:"bad", html: rc.reason==="cancelled" ? "Cancelled." : rc.reason==="radio_released" ? "Stopped: the radio was released." : "<b>Could not reconnect.</b> Try Reconnect again with the pad in pairing mode."};
+  return null;
+}
+function renderKnown(){
+  const el = $("knownList");
+  if (!knownPads.length){ el.innerHTML = '<div class="none">None yet. Pads you pair show up here so you can bring them back later.</div>'; return; }
+  const busy = rc.phase==="calling" || rc.phase==="repairing";
+  el.innerHTML = knownPads.map(p=>{
+    const line = rcLine(p), mine = busy && rc.mac===p.mac;
+    const name = p.name || (p.vid===0x054C ? "Sony controller" : "Bluetooth controller");
+    return `<div class="kpad" data-mac="${esc(p.mac)}">
+      <div class="th">${padThumb(p)}</div>
+      <div><div class="nm">${esc(name)} ${p.connected?'<span class="tag green" style="margin-left:6px">Connected</span>':""}</div>
+        <div class="mt">${esc(p.mac)} &middot; ${hex4(p.vid)}:${hex4(p.pid)}${p.le?" &middot; BLE":""}</div></div>
+      <div class="acts">
+        ${mine ? `<button class="btn sm" onclick="rcCancel()">Cancel</button>`
+               : `<button class="btn sm primary" ${p.connected||busy?"disabled":""} onclick="rcStart('${esc(p.mac)}')">Reconnect</button>`}
+        ${p.connected ? `<button class="btn sm" onclick="openCfg('${esc(macId(p.mac))}')">Settings</button>` : ""}
+        <button class="btn sm ghost danger" onclick="forgetPad('${esc(p.mac)}')" title="Drop its pairing key">Forget</button>
+      </div>
+      <div class="prog ${line?("show "+line.cls):""}">${line?((line.busy?'<span class="spin"></span>':"")+`<span>${line.html}</span>`+(line.busy?`<span class="bar"><i style="width:${Math.max(0,Math.min(100,line.pct))}%"></i></span>`:"")):""}</div>
+    </div>`;
+  }).join("");
+}
+window.rcStart = async function(mac){
+  try {
+    const r = await api("/api/bt/reconnect?mac="+mac,"POST");
+    if (r.status===404){ toast("That pad is no longer paired","err"); refreshKnown(); return; }
+    if (!r.ok) throw new Error("Bluetooth radio unavailable");
+    toast("Calling "+mac);
+  } catch(e){ toast(e.message,"err"); }
+  refreshRc();
+};
+window.rcCancel = async function(){ await api("/api/bt/reconnect/cancel","POST"); refreshRc(); };
+window.forgetPad = async function(mac){
+  if (!confirm("Forget "+mac+"?\n\nIts pairing key is deleted. To use it again, pair it from scratch.")) return;
+  try { await api("/api/bt/forget?mac="+mac,"POST"); toast("Forgotten"); } catch(e){ toast("Forget failed","err"); }
+  refreshKnown();
+};
+
+/* ---------- Nav highlight ---------- */
+const navLinks = [...document.querySelectorAll("nav a")];
+const navObs = new IntersectionObserver(es=>es.forEach(en=>{
+  if (en.isIntersecting) navLinks.forEach(a=>a.classList.toggle("on", a.getAttribute("href")==="#"+en.target.id));
+}), {rootMargin:"-40% 0px -55% 0px"});
+navLinks.forEach(a=>{ const s = document.querySelector(a.getAttribute("href")); if (s) navObs.observe(s); });
+
+/* ---------- Boot ---------- */
+if (location.pathname.startsWith("/mappings")) setTimeout(()=>location.hash="#mappings", 50);
+refreshStatus(); refreshBt(); refreshVpadType(); refreshHaptic(); refreshIdle(); refreshKnown(); refreshRc(); syncCfgPads();
+setInterval(refreshStatus, 1000);
+setInterval(refreshRc, 1000);
+setInterval(refreshKnown, 5000);
+setInterval(refreshBt, 2000);
+setInterval(refreshDiscovered, 2000);
+})();
+</script>
+</body>
+</html>

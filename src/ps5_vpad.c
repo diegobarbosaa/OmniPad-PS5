@@ -1,4 +1,5 @@
 #include "ps5_vpad.h"
+#include "remap.h"
 #include "shellui_inject.h"
 #include "log.h"
 #include "util.h"
@@ -18,6 +19,20 @@
 #include <pthread.h>
 
 #define VIRTUAL_DEVICE_DUALSENSE 3
+#define VIRTUAL_DEVICE_DUALSHOCK 2
+
+/* Which device type the next AddDevice uses. Can be flipped at runtime from
+ * the web dashboard via vpad_set_device_type(). Takes effect on the next
+ * virtual pad creation; existing live slots keep whatever they were made
+ * with. */
+static int g_vpad_device_type = VIRTUAL_DEVICE_DUALSENSE;
+
+int vpad_get_device_type(void) { return g_vpad_device_type; }
+void vpad_set_device_type(int type)
+{
+    if (type == VIRTUAL_DEVICE_DUALSENSE || type == VIRTUAL_DEVICE_DUALSHOCK)
+        g_vpad_device_type = type;
+}
 #define T_IDENTIFY               3000   /* ms to wait for DEVICE_ADDED */
 #define T_AMBIGUITY               300   /* ms after match before committing */
 #define LINE_MAX_LEN             1024
@@ -510,7 +525,7 @@ static void start_identification(int slot)
 
     int32_t ret = 0;
 #ifdef __PROSPERO__
-    ret = scePadVirtualDeviceAddDevice(&param, VIRTUAL_DEVICE_DUALSENSE);
+    ret = scePadVirtualDeviceAddDevice(&param, g_vpad_device_type);
 #endif
     log_line("vpad: slot %d AddDevice -> 0x%08x", slot, (unsigned)ret);
 
@@ -816,9 +831,32 @@ int vpad_slot_is_free(int slot)
     return g_slots[slot].status == VP_FREE;
 }
 
+static uint32_t g_remap[MAX_SLOTS][REMAP_N];
+static volatile int g_remap_on[MAX_SLOTS];
+
+void vpad_set_remap(int slot, const uint32_t *map)
+{
+    if (slot < 0 || slot >= MAX_SLOTS) return;
+    int on = 0;
+    g_remap_on[slot] = 0;               /* readers fall back to the auto layout while it changes */
+    for (int i = 0; i < REMAP_N; i++) {
+        g_remap[slot][i] = map ? map[i] : remap_bits[i];
+        if (g_remap[slot][i] != remap_bits[i]) on = 1;
+    }
+    g_remap_on[slot] = on;
+}
+
 void vpad_update(int slot, const pad_state_t *st)
 {
     if (!st || slot < 0 || slot >= MAX_SLOTS) return;
+
+    /* User overrides on top of the auto-detected layout (remap.h). */
+    pad_state_t remapped;
+    if (g_remap_on[slot]) {
+        remapped = *st;
+        remap_apply(g_remap[slot], &remapped);
+        st = &remapped;
+    }
 
     static uint32_t s_prev_btn[MAX_SLOTS] = {0};
     uint32_t prev = s_prev_btn[slot];

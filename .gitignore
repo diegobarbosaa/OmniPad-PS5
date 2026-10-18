@@ -90,3 +90,7 @@ Desktop.ini
 scratch/
 temp/
 tmp/
+
+# OmniPad port additions
+# generated from web/index.html by tools/embed_html.py
+src/web_page.c
