@@ -1,13 +1,13 @@
-# Nintendo full-report layout and response filtering
+# Reader-owned Nintendo USB bring-up
 
-Base/dependency: `contrib/test-baseline`. This is a private preparation branch; no PR or
+Base/dependency: `contrib/switch-parser`. This is a private preparation branch; no PR or
 public release is authorized. Target personal environment: PS5 Pro FW 10.20.
 
 ## Scope
-Nintendo 0x30 button/shoulder/navigation layout, report-ID rejection and no generic fallback for Nintendo. Preserve upstream Y conversion exactly. No handshake, GameSir or Ultimate-specific parser; no new 0x30 forwarding for CTRL_8BITDO_ADAPTER.
+Move Nintendo command sequence to the reader, use SET_REPORT 0x0280, observe 0x81 ACKs and bound retries. Parser/response filtering is an explicit prerequisite. No 8BitDo-specific forwarding or initialization is included.
 
 ## Evidence and risks
-Affects every control classified as Nintendo, not only Ultimate emulation. Essy reports external physical Nintendo testing on 13.42; user only observed limited Ultimate Switch input on 10.20 in a combined build. Extracted branch needs physical validation. Exhaustive axis equivalence is a regression check, not a new upstream Y fix.
+Transport is Prospero-only. Host parser suites cover response rejection but do not exercise real USB requests, ACK timing or retries; PS5 compilation and physical captures/testing are required. No claim of hardware validation of this extracted sequence is made. Broader interface/endpoint redesign is deferred to upstream.
 
 The user physically tested G7 Pro and 20-second retention only in an earlier
 personal build. The combined B26, new architecture and maintained PS still need

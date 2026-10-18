@@ -100,30 +100,9 @@ int usb_init_controller_handshake(int fd, usb_controller_type_t type)
     struct usb_ctl_request req;
 
     if (type == CTRL_NINTENDO_SWITCH_PRO) {
-        /* Switch Pro handshake 1: 0x80 0x02 0x01 */
-        uint8_t hs1[] = { 0x80, 0x02 };
-        memset(&req, 0, sizeof(req));
-        req.ucr_request.bmRequestType = 0x21; /* Class, Interface */
-        req.ucr_request.bRequest = 0x09;      /* SET_REPORT */
-        USETW(req.ucr_request.wValue, 0x0101);
-        USETW(req.ucr_request.wLength, sizeof(hs1));
-        req.ucr_data = hs1;
-        ioctl(fd, USB_DO_REQUEST, &req);
-        usleep(20000);
-
-        /* Handshake 2: 0x80 0x04 */
-        uint8_t hs2[] = { 0x80, 0x04 };
-        USETW(req.ucr_request.wLength, sizeof(hs2));
-        req.ucr_data = hs2;
-        ioctl(fd, USB_DO_REQUEST, &req);
-        usleep(20000);
-
-        /* Handshake 3: Enable standard 60Hz full reporting (subcommand 0x03 0x30) */
-        uint8_t hs3[] = { 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x30 };
-        USETW(req.ucr_request.wLength, sizeof(hs3));
-        req.ucr_data = hs3;
-        ioctl(fd, USB_DO_REQUEST, &req);
-        log_line("usb_ctrl: Switch Pro handshake completed");
+        /* The reader owns the IN endpoint. It will perform the USB handshake
+         * sequentially, waiting for 0x81 acknowledgements from the controller.
+         * Sending from probe drops the replies and leads to disconnects. */
         return 0;
     }
     else if (type == CTRL_SONY_DS3) {
@@ -169,6 +148,28 @@ int usb_init_controller_handshake(int fd, usb_controller_type_t type)
     }
 #endif
     return 0;
+}
+
+/* Nintendo output report 0x80 (SET_REPORT type 2, ID 0x80).
+ * Issue #16: 0x0101 used by older implementations is an INPUT report. */
+int usb_nintendo_switch_send_cmd(int fd, uint8_t subcmd)
+{
+#ifdef __PROSPERO__
+    if (fd < 0) return -1;
+    struct usb_ctl_request req;
+    uint8_t frame[2] = { 0x80, subcmd };
+    memset(&req, 0, sizeof(req));
+    req.ucr_request.bmRequestType = 0x21;
+    req.ucr_request.bRequest = 0x09;
+    USETW(req.ucr_request.wValue, 0x0280);
+    USETW(req.ucr_request.wIndex, 0x0000);
+    USETW(req.ucr_request.wLength, sizeof(frame));
+    req.ucr_data = frame;
+    return ioctl(fd, USB_DO_REQUEST, &req);
+#else
+    (void)fd; (void)subcmd;
+    return -1;
+#endif
 }
 
 uint8_t axis16_to_u8(int16_t val, int invert_y)
