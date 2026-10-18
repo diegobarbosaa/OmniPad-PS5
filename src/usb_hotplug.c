@@ -1,5 +1,6 @@
 #include "usb_hotplug.h"
 #include "usb_controllers.h"
+#include "ps_chord_hold.h"
 #include "ps5_vpad.h"
 #include "log.h"
 #include "util.h"
@@ -331,6 +332,9 @@ static void *usb_reader_worker(void *arg)
     long last_led_time = 0;
     long last_log_t = 0;
     int consecutive_errors = 0;
+    const int use_ps_hold = (dev->type == CTRL_GAMESIR_G7PRO);
+    const long hold_timeout_ms = dev->stale_timeout_ms;
+    omni_ps_chord_hold_t ps_hold = {0};
 
     log_line("usb_hotplug: Reader thread started for slot %d (%s on %s)",
              dev->slot, dev->name, dev->dev_path);
@@ -394,6 +398,15 @@ static void *usb_reader_worker(void *arg)
                 parsed = usb_parse_input_report(CTRL_GENERIC_HID, report, (size_t)n, &st);
             }
             if (parsed) {
+                if (use_ps_hold) {
+                    if (vpad_is_live(dev->slot))
+                        omni_ps_hold_report(&ps_hold, &st, &st, cur_time, hold_timeout_ms);
+                    else {
+                        memset(&ps_hold, 0, sizeof(ps_hold));
+                        if ((st.buttons & (PAD_BTN_SHARE | PAD_BTN_OPTIONS)) == (PAD_BTN_SHARE | PAD_BTN_OPTIONS))
+                            st.buttons &= ~(PAD_BTN_SHARE | PAD_BTN_OPTIONS);
+                    }
+                }
                 st.conn_type = dev->conn_type;
                 st.vid = dev->vid;
                 st.pid = dev->pid;
@@ -403,7 +416,8 @@ static void *usb_reader_worker(void *arg)
                     log_line("usb_hotplug: slot %d 2.4G controller active — re-arming virtual pad", dev->slot);
                     vpad_add_with_timeout(dev->slot, dev->conn_type, dev->name, dev->stale_timeout_ms);
                 }
-                vpad_update(dev->slot, &st);
+                if (use_ps_hold) vpad_update_level(dev->slot, &st);
+                else vpad_update(dev->slot, &st);
                 last_data_time = cur_time;
 
                 if (st.buttons != 0 && (cur_time - last_log_t > 300)) {
@@ -437,6 +451,21 @@ static void *usb_reader_worker(void *arg)
                 if (!vpad_slot_is_free(dev->slot)) {
                     log_line("usb_hotplug: slot %d 2.4G dongle idle for 60s — releasing virtual pad to standby", dev->slot);
                     vpad_remove(dev->slot);
+                }
+            }
+        }
+
+        if (use_ps_hold) {
+            if (!vpad_is_live(dev->slot)) {
+                memset(&ps_hold, 0, sizeof(ps_hold));
+            } else {
+                pad_state_t held;
+                if (omni_ps_hold_tick(&ps_hold, &held, now_ms(), hold_timeout_ms)) {
+                    held.conn_type = dev->conn_type;
+                    held.vid = dev->vid;
+                    held.pid = dev->pid;
+                    snprintf(held.controller_name, sizeof(held.controller_name), "%s", dev->name);
+                    vpad_update_level(dev->slot, &held);
                 }
             }
         }

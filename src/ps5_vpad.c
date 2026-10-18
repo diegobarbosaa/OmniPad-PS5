@@ -852,7 +852,7 @@ int vpad_slot_is_free(int slot)
     return g_slots[slot].status == VP_FREE;
 }
 
-void vpad_update(int slot, const pad_state_t *st)
+static void vpad_update_internal(int slot, const pad_state_t *st, int notify_shellui)
 {
     if (!st || slot < 0 || slot >= MAX_SLOTS) return;
 
@@ -866,7 +866,7 @@ void vpad_update(int slot, const pad_state_t *st)
     int32_t handle = g_slots[slot].handle;
     int32_t uid = g_slots[slot].user_id;
 
-    if (ps_pressed) {
+    if (ps_pressed && notify_shellui) {
         if (status == VP_READY && handle > 0) {
             log_line("vpad: physical PS button pressed on slot %d (handle %d, user 0x%08x)",
                      slot + 1, handle, (unsigned)uid);
@@ -892,6 +892,18 @@ void vpad_update(int slot, const pad_state_t *st)
     /* Latch state; vpad_poll handles continuous 250Hz injection */
     g_slots[slot].pad_state = *st;
     pthread_mutex_unlock(&g_vpad_mutex);
+}
+
+void vpad_update(int slot, const pad_state_t *st)
+{
+    vpad_update_internal(slot, st, 1);
+}
+
+/* A maintained input level must not acquire an independent ShellUI UP frame.
+ * Profile activation in finish_identification() remains unchanged. */
+void vpad_update_level(int slot, const pad_state_t *st)
+{
+    vpad_update_internal(slot, st, 0);
 }
 
 void vpad_press_ps_button(int slot)

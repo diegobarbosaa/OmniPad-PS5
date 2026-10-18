@@ -74,6 +74,10 @@ endif
 	./$(BUILD)/test_vpad_retention
 	clang -O2 -Isrc  tests/test_usb_retention.c src/usb_controllers.c src/util.c src/log.c -o $(BUILD)/test_usb_retention
 	./$(BUILD)/test_usb_retention
+	clang -O2 -Isrc  tests/test_ps_hold.c  -o $(BUILD)/test_ps_hold
+	./$(BUILD)/test_ps_hold
+	clang -O2 -Isrc -pthread tests/test_vpad_ps_level.c src/usb_controllers.c src/util.c src/log.c -ldl -o $(BUILD)/test_vpad_ps_level
+	./$(BUILD)/test_vpad_ps_level
 
 clean:
 	rm -rf $(BUILD)

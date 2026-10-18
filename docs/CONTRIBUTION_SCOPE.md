@@ -1,13 +1,13 @@
-# G7 Pro retention with generic per-slot storage
+# G7 Pro maintained View+Menu PS shortcut
 
-Base/dependency: `contrib/gamesir-hid`. This is a private preparation branch; no PR or
+Base/dependency: `contrib/g7-retention`. This is a private preparation branch; no PR or
 public release is authorized. Target personal environment: PS5 Pro FW 10.20.
 
 ## Scope
-A USB-selected 20000 ms bound ONLY for G7 Pro. Existing add callers and all other types, including G7 SE, keep 500 ms. Virtual code uses stored configuration, not model/name checks. Removal/reuse resets; same-device recycle preserves configuration but clears state/age.
+G7 Pro only: 600 ms delay, held PS until a button release, no repeating synthetic keepalive, timeout block-until-release. Level-update API avoids an independent remote UP; original update callers and profile activation remain. No Ultimate pulse machinery or Switch changes are imported.
 
 ## Evidence and risks
-Twenty-second retention was physically tested in an earlier personal build; this architectural extraction still needs console regression testing. Silent radio loss may retain input until the bound. Lifecycle tests cover isolation, reuse, invalid/default configuration, deferred removal and recycle.
+Held PS remains physically untested on 10.20. Fresh input after READY/recycle is required. Host tests simulate USB changes, silence, concurrent input and release through the real reader/vpad code, but do not exercise SceShellUI or real USB.
 
 The user physically tested G7 Pro and 20-second retention only in an earlier
 personal build. The combined B26, new architecture and maintained PS still need
