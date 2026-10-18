@@ -425,8 +425,12 @@ static void *usb_reader_worker(void *arg)
             }
         } else if (cur_time - last_data_time > 3000 && cur_time - last_log_t > 3000) {
             last_log_t = cur_time;
+#ifdef __PROSPERO__
             log_line("usb_hotplug: slot %d idle/standby (n=%d, use_fs=%d)",
                      dev->slot, n, dev->use_fs);
+#else
+            log_line("usb_hotplug: slot %d idle/standby (n=%d)", dev->slot, n);
+#endif
             /* If 2.4G dongle receives no packets for > 60 seconds (1 minute), release vpad to free user profile */
             if (dev->conn_type == CONN_USB_DONGLE_24G && (cur_time - last_data_time > 60000)) {
                 if (!vpad_slot_is_free(dev->slot)) {

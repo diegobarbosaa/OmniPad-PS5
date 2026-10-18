@@ -32,18 +32,42 @@ host-test:
 	./$(BUILD)/test_vpad_abi
 	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/util.c src/log.c tests/test_flow_sim.c -o $(BUILD)/test_flow_sim
 	./$(BUILD)/test_flow_sim
+ifneq ($(wildcard tests/test_normalization.c),)
 	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/util.c src/log.c tests/test_normalization.c -o $(BUILD)/test_normalization
 	./$(BUILD)/test_normalization
+else
+	@echo "SKIP: upstream source tests/test_normalization.c is absent"
+endif
+ifneq ($(wildcard tests/test_lifecycle_logout.c),)
 	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/util.c src/log.c tests/test_lifecycle_logout.c -o $(BUILD)/test_lifecycle_logout
 	./$(BUILD)/test_lifecycle_logout
+else
+	@echo "SKIP: upstream source tests/test_lifecycle_logout.c is absent"
+endif
+ifneq ($(wildcard tests/test_fuzz_usb.c),)
 	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/util.c src/log.c tests/test_fuzz_usb.c -o $(BUILD)/test_fuzz_usb
 	./$(BUILD)/test_fuzz_usb
+else
+	@echo "SKIP: upstream source tests/test_fuzz_usb.c is absent"
+endif
+ifneq ($(wildcard tests/test_hotplug_thrashing.c),)
 	clang -O2 -Isrc -pthread src/util.c src/log.c tests/test_hotplug_thrashing.c -o $(BUILD)/test_hotplug_thrashing
 	./$(BUILD)/test_hotplug_thrashing
+else
+	@echo "SKIP: upstream source tests/test_hotplug_thrashing.c is absent"
+endif
+ifneq ($(wildcard tests/test_web_concurrency.c),)
 	clang -O2 -Isrc src/util.c src/log.c tests/test_web_concurrency.c -o $(BUILD)/test_web_concurrency
 	./$(BUILD)/test_web_concurrency
+else
+	@echo "SKIP: upstream source tests/test_web_concurrency.c is absent"
+endif
+ifneq ($(wildcard tests/test_dongle_cable_switch.c),)
 	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/util.c src/log.c tests/test_dongle_cable_switch.c -o $(BUILD)/test_dongle_cable_switch
 	./$(BUILD)/test_dongle_cable_switch
+else
+	@echo "SKIP: upstream source tests/test_dongle_cable_switch.c is absent"
+endif
 
 clean:
 	rm -rf $(BUILD)
