@@ -36,28 +36,24 @@ static void test_ds4_usb_parsing(void)
 
 static void test_switch_pro_usb_parsing(void)
 {
-    printf("Testing Switch Pro USB parsing... ");
+    printf("Testing Switch Pro full USB 0x30 report... ");
     uint8_t report[64];
     memset(report, 0, sizeof(report));
-    report[3] = 0x01 | 0x40; /* B (Cross) + L1 */
-    report[4] = 0x10;        /* Home (PS button) */
-    report[5] = 0x02;        /* Dpad UP */
-
-    /* Sticks at bytes 6..11 */
-    report[6] = 0x00;
-    report[7] = 0x80;
-    report[8] = 0x80;
-    report[9] = 0x00;
-    report[10] = 0x80;
-    report[11] = 0x80;
-
+    report[0] = 0x30;
+    report[3] = 0x04 | 0x40; /* B -> Cross, R -> R1 */
+    report[4] = 0x10;        /* Home -> PS */
+    report[5] = 0x02;        /* D-pad Up */
+    report[6] = 0x00; report[7] = 0x08; report[8] = 0x80;
+    report[9] = 0x00; report[10] = 0x08; report[11] = 0x80;
     pad_state_t st;
-    int res = usb_parse_input_report(CTRL_NINTENDO_SWITCH_PRO, report, sizeof(report), &st);
-    assert(res == 1);
+    assert(usb_parse_input_report(CTRL_NINTENDO_SWITCH_PRO, report, sizeof(report), &st));
     assert(st.buttons & PAD_BTN_CROSS);
-    assert(st.buttons & PAD_BTN_L1);
+    assert(st.buttons & PAD_BTN_R1);
     assert(st.buttons & PAD_BTN_PS);
     assert(st.buttons & PAD_DPAD_UP);
+    assert(st.lx == 128 && st.ly == 128 && st.rx == 128 && st.ry == 128);
+    report[0] = 0x81;
+    assert(!usb_parse_input_report(CTRL_NINTENDO_SWITCH_PRO, report, sizeof(report), &st));
     printf("OK!\n");
 }
 

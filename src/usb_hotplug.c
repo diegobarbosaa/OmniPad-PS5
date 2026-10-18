@@ -389,7 +389,7 @@ static void *usb_reader_worker(void *arg)
         if (n > 0) {
             consecutive_errors = 0;
             int parsed = usb_parse_input_report(dev->type, report, (size_t)n, &st);
-            if (!parsed) {
+            if (!parsed && dev->type != CTRL_NINTENDO_SWITCH_PRO) {
                 parsed = usb_parse_input_report(CTRL_GENERIC_HID, report, (size_t)n, &st);
             }
             if (parsed) {

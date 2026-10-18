@@ -68,6 +68,8 @@ ifneq ($(wildcard tests/test_dongle_cable_switch.c),)
 else
 	@echo "SKIP: upstream source tests/test_dongle_cable_switch.c is absent"
 endif
+	clang -O2 -Isrc  tests/test_switch_protocol.c src/usb_controllers.c src/util.c src/log.c -o $(BUILD)/test_switch_protocol
+	./$(BUILD)/test_switch_protocol
 
 clean:
 	rm -rf $(BUILD)
