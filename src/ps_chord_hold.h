@@ -64,7 +64,7 @@ static inline int omni_ps_hold_tick(omni_ps_chord_hold_t *h,
     if (!h->waiting || h->blocked || now - h->started_ms < 600) return 0;
     h->waiting = 0;
     h->held = 1;
-    h->last_update_ms = now; /* This single transition emits vpad_update. */
+    /* Cached transition retains the last physical report timestamp. */
     omni_ps_hold_filter(h, out);
     return 1;
 }

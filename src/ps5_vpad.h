@@ -39,6 +39,7 @@ int vpad_slot_is_free(int slot);
 void vpad_update(int slot, const pad_state_t *st);
 /* Latch a level without synthesizing an additional ShellUI click. */
 void vpad_update_level(int slot, const pad_state_t *st);
+void vpad_update_cached_level(int slot, const pad_state_t *st);
 void vpad_get_slot_info(int slot, vpad_slot_info_t *out);
 void vpad_press_ps_button(int slot);
 int vpad_rebind_user(int slot, int32_t user_id);

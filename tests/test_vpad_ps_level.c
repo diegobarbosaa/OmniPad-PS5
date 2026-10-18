@@ -109,17 +109,17 @@ int main(void) {
     vpad_update_level(0, &out);
     clock_ms = 1600;
     assert(omni_ps_hold_tick(&h, &out, clock_ms, 20000));
-    vpad_update_level(0, &out);
+    vpad_update_cached_level(0, &out);
     assert(clicks == 0);
     for (clock_ms = 1604; clock_ms <= 3600; clock_ms += 4) {
         vpad_poll(clock_ms);
         assert(g_slots[0].pad_state.buttons & PAD_BTN_PS);
-        assert(g_slots[0].last_update_time == 1600);
+        assert(g_slots[0].last_update_time == 1000);
         assert(g_slots[0].pad_state.lx == 40 && g_slots[0].pad_state.r2 == 235);
     }
-    clock_ms = 21600; vpad_poll(clock_ms);
+    clock_ms = 21000; vpad_poll(clock_ms);
     assert(g_slots[0].pad_state.buttons & PAD_BTN_PS);
-    clock_ms = 21601; vpad_poll(clock_ms);
+    clock_ms = 21001; vpad_poll(clock_ms);
     assert(g_slots[0].pad_state.buttons == 0);
     assert(!omni_ps_hold_tick(&h, &out, clock_ms, 20000) && h.blocked);
     /* Old entry point still sends a click exactly once on a rising edge. */

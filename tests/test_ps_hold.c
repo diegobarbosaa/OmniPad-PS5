@@ -23,10 +23,10 @@ int main(void) {
     assert(omni_ps_hold_tick(&h, &out, 1600, timeout));
     assert(out.buttons & PAD_BTN_PS);
     assert(!omni_ps_hold_tick(&h, &out, 1670, timeout));
-    assert(h.held && h.last_update_ms == 1600);
-    assert(!omni_ps_hold_tick(&h, &out, 21600, timeout));
-    assert(h.held && h.last_update_ms == 1600);
-    assert(!omni_ps_hold_tick(&h, &out, 21601, timeout));
+    assert(h.held && h.last_update_ms == 1000);
+    assert(!omni_ps_hold_tick(&h, &out, 21000, timeout));
+    assert(h.held && h.last_update_ms == 1000);
+    assert(!omni_ps_hold_tick(&h, &out, 21001, timeout));
     assert(h.blocked && !h.held);
     /* Even fresh held reports cannot restart a timed-out chord. */
     omni_ps_hold_report(&h, &raw, &out, 22000, timeout);

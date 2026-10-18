@@ -465,7 +465,7 @@ static void *usb_reader_worker(void *arg)
                     held.vid = dev->vid;
                     held.pid = dev->pid;
                     snprintf(held.controller_name, sizeof(held.controller_name), "%s", dev->name);
-                    vpad_update_level(dev->slot, &held);
+                    vpad_update_cached_level(dev->slot, &held);
                 }
             }
         }

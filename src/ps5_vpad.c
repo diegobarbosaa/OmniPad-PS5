@@ -852,7 +852,7 @@ int vpad_slot_is_free(int slot)
     return g_slots[slot].status == VP_FREE;
 }
 
-static void vpad_update_internal(int slot, const pad_state_t *st, int notify_shellui)
+static void vpad_update_internal(int slot, const pad_state_t *st, int notify_shellui, int fresh_input)
 {
     if (!st || slot < 0 || slot >= MAX_SLOTS) return;
 
@@ -886,8 +886,10 @@ static void vpad_update_internal(int slot, const pad_state_t *st, int notify_she
 
     g_slots[slot].battery_level = st->battery_level;
     g_slots[slot].battery_charging = st->battery_charging;
-    g_slots[slot].last_update_time = now_ms();
-    g_slots[slot].stale_gap_logged = 0;
+    if (fresh_input) {
+        g_slots[slot].last_update_time = now_ms();
+        g_slots[slot].stale_gap_logged = 0;
+    }
 
     /* Latch state; vpad_poll handles continuous 250Hz injection */
     g_slots[slot].pad_state = *st;
@@ -896,14 +898,20 @@ static void vpad_update_internal(int slot, const pad_state_t *st, int notify_she
 
 void vpad_update(int slot, const pad_state_t *st)
 {
-    vpad_update_internal(slot, st, 1);
+    vpad_update_internal(slot, st, 1, 1);
 }
 
 /* A maintained input level must not acquire an independent ShellUI UP frame.
  * Profile activation in finish_identification() remains unchanged. */
 void vpad_update_level(int slot, const pad_state_t *st)
 {
-    vpad_update_internal(slot, st, 0);
+    vpad_update_internal(slot, st, 0, 1);
+}
+
+/* Timer-only level transition: never refresh physical input freshness. */
+void vpad_update_cached_level(int slot, const pad_state_t *st)
+{
+    vpad_update_internal(slot, st, 0, 0);
 }
 
 void vpad_press_ps_button(int slot)
