@@ -1,13 +1,13 @@
-# GameSir HID identification and decoding
+# G7 Pro retention with generic per-slot storage
 
-Base/dependency: `contrib/test-baseline`. This is a private preparation branch; no PR or
+Base/dependency: `contrib/gamesir-hid`. This is a private preparation branch; no PR or
 public release is authorized. Target personal environment: PS5 Pro FW 10.20.
 
 ## Scope
-Only exact 3537:1022 and 3537:1082 identities, nine-byte G7 Pro and prefixed G7 SE reports, and invalid-report fallback protection. No watchdog, PS shortcut, Switch or Ultimate changes.
+A USB-selected 20000 ms bound ONLY for G7 Pro. Existing add callers and all other types, including G7 SE, keep 500 ms. Virtual code uses stored configuration, not model/name checks. Removal/reuse resets; same-device recycle preserves configuration but clears state/age.
 
 ## Evidence and risks
-G7 Pro worked in an earlier user build on 10.20; G7 SE relies on Essy external evidence and synthetic tests. Unknown GameSir PIDs keep upstream classification; malformed reports must not become generic phantom input.
+Twenty-second retention was physically tested in an earlier personal build; this architectural extraction still needs console regression testing. Silent radio loss may retain input until the bound. Lifecycle tests cover isolation, reuse, invalid/default configuration, deferred removal and recycle.
 
 The user physically tested G7 Pro and 20-second retention only in an earlier
 personal build. The combined B26, new architecture and maintained PS still need

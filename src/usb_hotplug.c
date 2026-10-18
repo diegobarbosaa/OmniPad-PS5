@@ -31,6 +31,7 @@ typedef struct {
     usb_controller_type_t type;
     const char           *name;
     pad_conn_type_t       conn_type;
+    long                  stale_timeout_ms;
     pthread_t             thread;
     volatile int          stop_thread;
 
@@ -400,7 +401,7 @@ static void *usb_reader_worker(void *arg)
                 /* If 2.4G dongle was in standby / slot freed, re-arm the virtual pad */
                 if (dev->conn_type == CONN_USB_DONGLE_24G && vpad_slot_is_free(dev->slot)) {
                     log_line("usb_hotplug: slot %d 2.4G controller active — re-arming virtual pad", dev->slot);
-                    vpad_add(dev->slot, dev->conn_type, dev->name);
+                    vpad_add_with_timeout(dev->slot, dev->conn_type, dev->name, dev->stale_timeout_ms);
                 }
                 vpad_update(dev->slot, &st);
                 last_data_time = cur_time;
@@ -593,6 +594,7 @@ static void probe_usb_devices(void)
             sdev->vid = vid;
             sdev->pid = pid;
             sdev->type = ctype;
+            sdev->stale_timeout_ms = usb_controller_stale_timeout_ms(ctype);
             sdev->name = ctrl_name;
             sdev->stop_thread = 0;
 
@@ -620,7 +622,7 @@ static void probe_usb_devices(void)
                                            strstr(ctrl_name, "Receiver") != NULL));
             sdev->conn_type = is_dongle ? CONN_USB_DONGLE_24G : CONN_USB_WIRED;
 
-            vpad_add(slot, sdev->conn_type, ctrl_name);
+            vpad_add_with_timeout(slot, sdev->conn_type, ctrl_name, sdev->stale_timeout_ms);
             pthread_create(&sdev->thread, NULL, usb_reader_worker, sdev);
         }
     }

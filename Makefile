@@ -70,6 +70,10 @@ else
 endif
 	clang -O2 -Isrc  tests/test_gamesir_hid.c src/usb_controllers.c src/util.c src/log.c -o $(BUILD)/test_gamesir_hid
 	./$(BUILD)/test_gamesir_hid
+	clang -O2 -Isrc -pthread tests/test_vpad_retention.c src/util.c src/log.c -ldl -o $(BUILD)/test_vpad_retention
+	./$(BUILD)/test_vpad_retention
+	clang -O2 -Isrc  tests/test_usb_retention.c src/usb_controllers.c src/util.c src/log.c -o $(BUILD)/test_usb_retention
+	./$(BUILD)/test_usb_retention
 
 clean:
 	rm -rf $(BUILD)

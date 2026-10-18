@@ -2,6 +2,7 @@
 #include "pad_types.h"
 #include "log.h"
 #include "util.h"
+#include "input_watchdog.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -100,6 +101,11 @@ usb_controller_type_t usb_identify_controller(uint16_t vid, uint16_t pid, const 
     /* Isolate non-gamepad devices (USB flash drives, SSDs, keyboards, webcams) */
     if (name_out) *name_out = "Unknown / Non-Gamepad USB Device";
     return CTRL_UNKNOWN;
+}
+
+long usb_controller_stale_timeout_ms(usb_controller_type_t type)
+{
+    return type == CTRL_GAMESIR_G7PRO ? OMNI_EVENT_STALE_TIMEOUT_MS : OMNI_DEFAULT_STALE_TIMEOUT_MS;
 }
 
 int usb_init_controller_handshake(int fd, usb_controller_type_t type)
