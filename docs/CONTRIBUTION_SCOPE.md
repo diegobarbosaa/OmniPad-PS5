@@ -1,25 +1,39 @@
-# Reader-owned Nintendo USB bring-up
+# Nintendo full-report parser and USB initialization; Ultimate 2 Switch-mode test report
 
-Base/dependency: `contrib/switch-parser`. This is a private preparation branch; no PR or
-public release is authorized. Target personal environment: PS5 Pro FW 10.20.
+## Hardware context and scope
 
-## Scope
-Move Nintendo command sequence to the reader, use SET_REPORT 0x0280, observe 0x81 ACKs and bound retries. Parser/response filtering is an explicit prerequisite. No 8BitDo-specific forwarding or initialization is included.
+I use a **PS5 Pro on firmware 10.20** with a GameSir G7 Pro and an **8BitDo Ultimate 2 Wireless (not the Ultimate 2C)**. These are focused contributions extracted from my personal integration build, rather than a proposal to maintain or redesign OmniPad. No Bluetooth stack, UI redesign, new Ultimate XInput/DInput implementation, or diagnostic payload is included.
 
-## Evidence and risks
-Transport is Prospero-only. Host parser suites cover response rejection but do not exercise real USB requests, ACK timing or retries; PS5 compilation and physical captures/testing are required. No claim of hardware validation of this extracted sequence is made. Broader interface/endpoint redesign is deferred to upstream.
+Physical observations below come from my personal consolidated build; the exact extracted contribution branches have host-test and PS5 compilation coverage but have **not been separately flashed and physically retested**. Please treat these as draft contributions for review and community testing, not universal compatibility claims.
 
-The user physically tested G7 Pro and 20-second retention only in an earlier
-personal build. The combined B26, new architecture and maintained PS still need
-physical testing. Ultimate normal modes remain non-functional in user tests;
-no full compatibility claim is made. DS4 is not physically tested this round.
+## Result and implementation
 
-GameSir/Nintendo findings and adapted code are credited to Essyekky32 (Essy),
-author of issue #16: https://github.com/diegobarbosaa/OmniPad-PS5/issues/16 .
-Essy's external report concerns FW 13.42; it is distinct from the user's 10.20
-evidence. Upstream authors, credits and GPL license are preserved.
+Decode Nintendo full `0x30` input reports with the corrected layout, reject protocol responses instead of generic-HID fallback, and perform bounded reader-owned USB initialization/ACK handling. These changes affect **the Nintendo protocol path generally**, not an identifiable Ultimate-only driver. The parser keeps the **original upstream Y conversion**; no personal-build Y regression is presented as a new upstream fix.
 
-Codex/AI assisted analysis, selective extraction, implementation and automated
-tests. Host simulation and compilation are not physical console validation.
-No independent human code review is claimed. Tests and final results for each
-branch are recorded in the personal integration documentation.
+The `CTRL_8BITDO_ADAPTER` route is not widened to forward new `0x30` reports. No Ultimate-specific VID/PID, experimental XInput/DInput parser, USB interface redesign, retained-input policy or PS chord is added here. No changes are made to DS4 behavior.
+
+## Ultimate 2 Wireless: what I actually tested
+
+On my PS5 Pro FW10.20, the Ultimate 2 Wireless **worked without observed problems during the tests performed**, through its **2.4-GHz dongle in Nintendo Switch Pro emulation**. Controls, left-stick orientation and the subsequently tested D-pad worked. This is limited personal-build evidence, not complete validation of every feature/game or this extracted branch.
+
+To reproduce my connection mode: with the controller **off and out of the charging dock**, hold **Y**, then press **Home to turn it on while continuing to hold Y**, using the dongle. Mode availability depends on the controller/receiver firmware; this instruction does not require or suggest changing PS5 firmware. Reference: https://gist.github.com/superjamie/271f186774494a80a4df95afbf1bb77d .
+
+**Normal XInput/DInput modes were not functional in my tests.** USB identification by name is not proof of usable input. Further investigation is pending; no support claim or speculative fix for those modes is included. Existing #18 covers a broader Bluetooth/Ultimate profile effort, which is separate from this dongle/Nintendo protocol work.
+
+## Why no additional PS shortcut on the Ultimate
+
+Switch emulation uses shared identity `057E:2009`; it does not reliably distinguish this Ultimate from other Switch Pro-compatible controllers. Nintendo Home is already mapped to PS in the parser. Adding View/Menu (Minus/Plus) as a general chord would affect every controller on that route and consume that combination. I left that policy to the maintainer rather than extending a hardware-specific feature globally. The G7-only maintained PS shortcut is in the separate GameSir draft.
+
+## Known issues and validation boundaries
+
+This draft does not fix the G7 dongle D-pad issue reported in the separate GameSir contribution. Ultimate working in Switch mode does not imply the same defect exists on its path.
+
+The extracted branch passed **4 available host suites** and PS5 SDK compilation in Docker, including Nintendo report/response checks and exhaustive upstream-Y equivalence. Host tests do **not** exercise real Prospero USB requests, ACK timing or retries. The exact extracted branch and other genuine Switch Pro hardware still need physical testing. Six upstream targets with missing source files are explicitly SKIP, not passed. DS4 was not physically tested.
+
+Base: upstream `b7682ef`. Parser and handshake remain separate commits for review/reversion; handshake explicitly depends on the corrected parser/response filtering. A small common test-baseline commit is also included in the GameSir draft. No personal branch history, experimental Ultimate modes, diagnostic B28/B29 logging or compiled ELFs are included. Broader protocol/architecture work is left to upstream, including the planned 1.1 work.
+
+## Credits and transparency
+
+Credit to **Essyekky32 (Essy), author of #16**, for the GameSir/Nintendo findings and code that informed these changes. Original project authors, notices and GPL-3.0 license are preserved.
+
+Codex/AI assisted analysis, selective implementation, extraction, and automated tests. Physical testing was performed by me on the console; compilation and simulated host tests are not substitutes for hardware validation. No independent human code review is claimed. Further testing time is limited, and unresolved behavior is disclosed below.
