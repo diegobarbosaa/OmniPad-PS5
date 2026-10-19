@@ -12,12 +12,15 @@ typedef enum {
     CTRL_SONY_DS3,
     CTRL_XBOX_XINPUT,
     CTRL_8BITDO_ADAPTER,
-    CTRL_GENERIC_HID
+    CTRL_GENERIC_HID,
+    CTRL_GAMESIR_G7PRO,
+    CTRL_GAMESIR_G7SE
 } usb_controller_type_t;
 
 usb_controller_type_t usb_identify_controller(uint16_t vid, uint16_t pid, const char **name_out);
 int usb_init_controller_handshake(int fd, usb_controller_type_t type);
 int usb_parse_input_report(usb_controller_type_t type, const uint8_t *data, size_t len, pad_state_t *st);
 uint8_t axis16_to_u8(int16_t val, int invert_y);
+long usb_controller_stale_timeout_ms(usb_controller_type_t type);
 
 #endif /* USB_CONTROLLERS_H */
