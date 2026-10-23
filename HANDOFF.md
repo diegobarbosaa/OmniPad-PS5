@@ -43,7 +43,7 @@ Arreglos de build: Makefile añade `src/generic.c src/crc32.c` a los links con p
 1. Compilar con PS5 SDK (bloques `__PROSPERO__`: hotplug, #20, tick 250/4000 µs) y probar en consola.
 2. ~~Decidir política de retención USB~~ RESUELTO (base = PR #17): USB event-driven, sin auto-neutral por silencio; 500 ms solo para CONN_NETWORK_STREAM (ya es lo que hace #17 en ps5_vpad.c). Tests alineados; nota en docs/CONTRIBUTION_SCOPE.md.
    - Evidencia de campo (comentario de jpemendonca en #19, FW 13.60, 8BitDo Ultimate 2C por dongle 2.4GHz 2dc8:3106): el dongle solo envía al cambiar; con el bucle 1.0.4 (timeout 15 ms, reinicio por llamada) se perdían toques y direcciones/gatillos sostenidos. Con un IN transfer armado sin timeout, re-armado tras USB_FS_COMPLETE, chequeo de complete.ep_index y sin auto-neutral de 500 ms en slots USB, dejó de perder entradas (DS4 054c:05c4 sigue OK). Respalda #17 y la política #18 (event-driven) sobre los 500 ms de #19. Ojo: probó su propia implementación, no esta rama.
-   - Verificado en código (host): `usb_fs_recv_packet` en usb_hotplug.c es genérico (timeout 0, in_armed, re-arma tras COMPLETE, valida ep_index), aplica también a XInput/HID, no solo a GIP. El dongle 2C es XInput (EP 0x81).
+   - Verificado en código (host): `usb_fs_recv_packet` en usb_hotplug.c es genérico (timeout 0, in_armed, re-arma tras COMPLETE, valida ep_index), aplica también a XInput/HID, no solo a GIP. El dongle 2C es XInput (OUT 0x05 según #21; el IN no está documentado, no asumir 0x81).
 3. Release: decidir versión (README/docs aún dicen 1.0.4 y "sin Bluetooth", desactualizado tras #18). Se deja sin tocar a propósito: reescribir README/COMPATIBILITY como "BT activo" requiere validar #18 en consola.
 4. Dashboard: exponer `stale_timeout_ms` (opcional; poco valor tras la decisión del punto 2, solo afecta a network stream).
 5. Subir rama/PRs: sin credenciales aquí; usar el bundle.
@@ -62,3 +62,8 @@ Arreglos de build: Makefile añade `src/generic.c src/crc32.c` a los links con p
 ## Revisión PR #21 (sin hardware)
 Head de #21 (3256714) y de #17 ya están contenidos en `integration`; sin commits nuevos pendientes de traer. Comentarios/revisiones del PR no verificables desde aquí (API de GitHub limitada, sin credenciales).
 Abierto: tick del worker. #17 usa 250 µs para todo USB_FS; `integration` lo limita a GIP y deja 4 ms al resto (#19). Si con base #17 se prefiere 250 µs para todos, es cambiar `usleep(is_xbox_one ? 250 : 4000)` en usb_hotplug.c; decidir tras prueba en consola con el dongle 2C.
+
+## Datos de #21 (descripción + comentario del autor, FW 13.60)
+- 8BitDo Ultimate 2C (2dc8:3106, dongle y cable) no envía nada hasta recibir el LED de jugador XInput `01 03 02` por el endpoint OUT interrupt (0x05); el SET_REPORT por control lo acepta (r2=0) pero lo ignora. Sin eso: n=0 y re-enumera a ~10 s (3106→3016→3106). Con #21: funciona. DS4 (054c:05c4, cable) OK en ambas builds.
+- El LED por OUT se envía a TODO CTRL_XBOX_XINPUT no-GIP (incluye Machenike G5 Pro y ShanWan); el autor no los tiene. **Pendiente de prueba en hardware con Machenike/ShanWan** (riesgo bajo: comando estándar Xbox 360). Presente en `integration`: usb_hotplug.c ~L534.
+- Tras #21 el dongle aún tenía retraso/toques perdidos/direcciones que se sueltan; con una implementación equivalente a #17 desapareció. Cable: perfecto. Conclusión: #21 (que mande datos) + #17 (que no pierda ninguno) son complementarios y ambos están en `integration`.
