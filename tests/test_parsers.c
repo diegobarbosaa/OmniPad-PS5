@@ -263,23 +263,20 @@ static void test_machenike_g5_pro_wired_usb_c(void)
     assert(t4 == CTRL_XBOX_XINPUT);
     assert(name != NULL && (strstr(name, "MACHENIKE") != NULL || strstr(name, "Machenike") != NULL));
 
-    /* 5. Test parsing report with vid=0x2345 */
+    /* 5. Parse a real XInput frame (0x00, len 0x14, buttons at offset 2) for vid=0x2345 */
     uint8_t report[20];
     memset(report, 0, sizeof(report));
-    report[0] = 0x01; /* Report ID */
-    report[1] = 0x00; report[2] = 0x80; /* LX = 128 */
-    report[3] = 0x00; report[4] = 0x80; /* LY = 128 */
-    report[5] = 0x00; report[6] = 0x80; /* RX = 128 */
-    report[7] = 0x00; report[8] = 0x80; /* RY = 128 */
-    report[15] = 0x01; /* Button A -> Cross */
-
+    report[0] = 0x00; report[1] = 0x14;
+    report[3] = 0x10;            /* btn high byte 0x10 -> 0x1000 = A -> Cross */
+    report[4] = 200;             /* LT */
     pad_state_t st;
-    /* profiles_parse_report() was removed upstream; use the USB identify+parse path. */
     usb_controller_type_t t = usb_identify_controller(0x2345, 0xe02b, NULL);
     assert(t == CTRL_XBOX_XINPUT);
     memset(&st, 0, sizeof(st));
     int res = usb_parse_input_report(t, report, sizeof(report), &st);
-    (void)res; /* report is an HID-style buffer, not an XInput 0x00 frame: identification only */
+    assert(res == 1);
+    assert(st.buttons & PAD_BTN_CROSS);
+    assert(st.l2 == 200);
 
     printf("OK!\n");
 }

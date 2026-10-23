@@ -78,6 +78,8 @@ endif
 	./$(BUILD)/test_ps_hold
 	clang -O2 -Isrc -pthread tests/test_vpad_ps_level.c src/usb_controllers.c src/remap.c src/util.c src/log.c -ldl -o $(BUILD)/test_vpad_ps_level
 	./$(BUILD)/test_vpad_ps_level
+	clang -O2 -Isrc  tests/test_madcatz_fightpad.c src/usb_controllers.c src/util.c src/log.c -o $(BUILD)/test_madcatz_fightpad
+	./$(BUILD)/test_madcatz_fightpad
 	clang -O2 -Isrc  tests/test_switch_protocol.c src/usb_controllers.c src/util.c src/log.c -o $(BUILD)/test_switch_protocol
 	./$(BUILD)/test_switch_protocol
 

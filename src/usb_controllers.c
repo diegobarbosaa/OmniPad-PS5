@@ -90,6 +90,13 @@ usb_controller_type_t usb_identify_controller(uint16_t vid, uint16_t pid, const 
         }
     }
 
+    /* Mad Catz Street Fighter IV Wireless FightPad (PS3 RF pad), issue #10.
+     * 27-byte HID reports; layout captured by the reporter on Windows. */
+    if (vid == 0x0738 && pid == 0x8828) {
+        if (name_out) *name_out = "Mad Catz SF IV FightPad (USB HID)";
+        return CTRL_MADCATZ_SF4_FIGHTPAD;
+    }
+
     /* Generic PC/HID Gamepad known VIDs (DragonRise, Betop, Retro-Bit, Mayflash, etc.) */
     if (vid == 0x0079 || vid == 0x0810 || vid == 0x11ff || vid == 0x12bd ||
         vid == 0x20d6 || vid == 0x24c6 || vid == 0x146b || vid == 0x0738 ||
@@ -261,6 +268,36 @@ int usb_parse_input_report(usb_controller_type_t type, const uint8_t *data, size
         if (len < 10 || data[0] != 0x05) return 0;
         gamesir_parse_gamepad(data + 1, st);
         return 1;
+
+    case CTRL_MADCATZ_SF4_FIGHTPAD: {
+        if (len < 3) return 0;
+        uint8_t f = data[0], sy = data[1];
+        if (f & 0x01) st->buttons |= PAD_BTN_SQUARE;
+        if (f & 0x02) st->buttons |= PAD_BTN_CROSS;
+        if (f & 0x04) st->buttons |= PAD_BTN_CIRCLE;
+        if (f & 0x08) st->buttons |= PAD_BTN_TRIANGLE;
+        if (f & 0x10) st->buttons |= PAD_BTN_L1;
+        if (f & 0x20) st->buttons |= PAD_BTN_R1;
+        if (f & 0x40) { st->buttons |= PAD_BTN_L2; st->l2 = 255; }
+        if (f & 0x80) { st->buttons |= PAD_BTN_R2; st->r2 = 255; }
+        if (sy & 0x01) st->buttons |= PAD_BTN_SHARE;
+        if (sy & 0x02) st->buttons |= PAD_BTN_OPTIONS;
+        if (sy & 0x10) st->buttons |= PAD_BTN_PS;
+        /* Standard 8-way hat: neutral 0x0F; captured cardinals 0/2/4/6.
+         * Diagonals (1/3/5/7) are NOT captured yet: assumed standard hat order. */
+        switch (data[2] & 0x0f) {
+        case 0: st->buttons |= PAD_DPAD_UP; break;
+        case 1: st->buttons |= PAD_DPAD_UP | PAD_DPAD_RIGHT; break;
+        case 2: st->buttons |= PAD_DPAD_RIGHT; break;
+        case 3: st->buttons |= PAD_DPAD_DOWN | PAD_DPAD_RIGHT; break;
+        case 4: st->buttons |= PAD_DPAD_DOWN; break;
+        case 5: st->buttons |= PAD_DPAD_DOWN | PAD_DPAD_LEFT; break;
+        case 6: st->buttons |= PAD_DPAD_LEFT; break;
+        case 7: st->buttons |= PAD_DPAD_UP | PAD_DPAD_LEFT; break;
+        default: break;
+        }
+        return 1;
+    }
 
     case CTRL_NINTENDO_SWITCH_PRO: {
         /* Reject 0x81 handshake replies and 0x21 subcommand responses.
