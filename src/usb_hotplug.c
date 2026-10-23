@@ -706,7 +706,13 @@ static void *usb_reader_worker(void *arg)
             }
         }
 
-        usleep(250); /* fast re-arm tick (PR17 USB_FS reliability) */
+#ifdef __PROSPERO__
+        /* Xbox GIP on USB_FS needs the fast re-arm tick (PR #17); every other
+         * device keeps the ~250 Hz polling tick (PR #19) to save CPU. */
+        usleep(is_xbox_one ? 250 : 4000);
+#else
+        usleep(4000); /* ~250 Hz polling tick */
+#endif
     }
 
 

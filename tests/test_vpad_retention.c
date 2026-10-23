@@ -27,7 +27,9 @@ int main(void){
     clock_ms=1500;vpad_poll(clock_ms);
     assert(g_slots[0].pad_state.buttons && g_slots[1].pad_state.buttons);
     clock_ms=1501;vpad_poll(clock_ms);
-    assert(!g_slots[0].pad_state.buttons && g_slots[1].pad_state.buttons);
+    /* Integration: default-bound USB pads are event-driven (#18) and are NOT cleared by silence;
+     * only CONN_NETWORK_STREAM and explicit driver bounds are watched (see HANDOFF decision #19). */
+    assert(g_slots[0].pad_state.buttons && g_slots[1].pad_state.buttons);
     assert(g_slots[1].last_update_time==1000); /* Cached polls do not renew. */
     clock_ms=21000;vpad_poll(clock_ms);assert(g_slots[1].pad_state.buttons);
     clock_ms=21001;vpad_poll(clock_ms);assert(!g_slots[1].pad_state.buttons);

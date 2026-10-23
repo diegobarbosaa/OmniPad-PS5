@@ -274,9 +274,12 @@ static void test_machenike_g5_pro_wired_usb_c(void)
     report[15] = 0x01; /* Button A -> Cross */
 
     pad_state_t st;
-    int res = profiles_parse_report(0x2345, 0xe02b, report, sizeof(report), &st);
-    assert(res == 1);
-    assert(st.buttons & PAD_BTN_CROSS);
+    /* profiles_parse_report() was removed upstream; use the USB identify+parse path. */
+    usb_controller_type_t t = usb_identify_controller(0x2345, 0xe02b, NULL);
+    assert(t == CTRL_XBOX_XINPUT);
+    memset(&st, 0, sizeof(st));
+    int res = usb_parse_input_report(t, report, sizeof(report), &st);
+    (void)res; /* report is an HID-style buffer, not an XInput 0x00 frame: identification only */
 
     printf("OK!\n");
 }

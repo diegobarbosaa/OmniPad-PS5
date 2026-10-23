@@ -26,26 +26,26 @@ test: host-test
 
 host-test:
 	@mkdir -p $(BUILD)
-	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/util.c src/log.c tests/test_parsers.c -o $(BUILD)/test_parsers
+	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/generic.c src/crc32.c src/util.c src/log.c tests/test_parsers.c -o $(BUILD)/test_parsers
 	./$(BUILD)/test_parsers
 	clang -O2 -Isrc tests/test_vpad_abi.c -o $(BUILD)/test_vpad_abi
 	./$(BUILD)/test_vpad_abi
-	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/util.c src/log.c tests/test_flow_sim.c -o $(BUILD)/test_flow_sim
+	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/generic.c src/crc32.c src/util.c src/log.c tests/test_flow_sim.c -o $(BUILD)/test_flow_sim
 	./$(BUILD)/test_flow_sim
 ifneq ($(wildcard tests/test_normalization.c),)
-	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/util.c src/log.c tests/test_normalization.c -o $(BUILD)/test_normalization
+	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/generic.c src/crc32.c src/util.c src/log.c tests/test_normalization.c -o $(BUILD)/test_normalization
 	./$(BUILD)/test_normalization
 else
 	@echo "SKIP: upstream source tests/test_normalization.c is absent"
 endif
 ifneq ($(wildcard tests/test_lifecycle_logout.c),)
-	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/util.c src/log.c tests/test_lifecycle_logout.c -o $(BUILD)/test_lifecycle_logout
+	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/generic.c src/crc32.c src/util.c src/log.c tests/test_lifecycle_logout.c -o $(BUILD)/test_lifecycle_logout
 	./$(BUILD)/test_lifecycle_logout
 else
 	@echo "SKIP: upstream source tests/test_lifecycle_logout.c is absent"
 endif
 ifneq ($(wildcard tests/test_fuzz_usb.c),)
-	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/util.c src/log.c tests/test_fuzz_usb.c -o $(BUILD)/test_fuzz_usb
+	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/generic.c src/crc32.c src/util.c src/log.c tests/test_fuzz_usb.c -o $(BUILD)/test_fuzz_usb
 	./$(BUILD)/test_fuzz_usb
 else
 	@echo "SKIP: upstream source tests/test_fuzz_usb.c is absent"
@@ -63,20 +63,20 @@ else
 	@echo "SKIP: upstream source tests/test_web_concurrency.c is absent"
 endif
 ifneq ($(wildcard tests/test_dongle_cable_switch.c),)
-	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/util.c src/log.c tests/test_dongle_cable_switch.c -o $(BUILD)/test_dongle_cable_switch
+	clang -O2 -Isrc src/usb_controllers.c src/profiles.c src/generic.c src/crc32.c src/util.c src/log.c tests/test_dongle_cable_switch.c -o $(BUILD)/test_dongle_cable_switch
 	./$(BUILD)/test_dongle_cable_switch
 else
 	@echo "SKIP: upstream source tests/test_dongle_cable_switch.c is absent"
 endif
 	clang -O2 -Isrc  tests/test_gamesir_hid.c src/usb_controllers.c src/util.c src/log.c -o $(BUILD)/test_gamesir_hid
 	./$(BUILD)/test_gamesir_hid
-	clang -O2 -Isrc -pthread tests/test_vpad_retention.c src/util.c src/log.c -ldl -o $(BUILD)/test_vpad_retention
+	clang -O2 -Isrc -pthread tests/test_vpad_retention.c src/remap.c src/util.c src/log.c -ldl -o $(BUILD)/test_vpad_retention
 	./$(BUILD)/test_vpad_retention
 	clang -O2 -Isrc  tests/test_usb_retention.c src/usb_controllers.c src/util.c src/log.c -o $(BUILD)/test_usb_retention
 	./$(BUILD)/test_usb_retention
 	clang -O2 -Isrc  tests/test_ps_hold.c  -o $(BUILD)/test_ps_hold
 	./$(BUILD)/test_ps_hold
-	clang -O2 -Isrc -pthread tests/test_vpad_ps_level.c src/usb_controllers.c src/util.c src/log.c -ldl -o $(BUILD)/test_vpad_ps_level
+	clang -O2 -Isrc -pthread tests/test_vpad_ps_level.c src/usb_controllers.c src/remap.c src/util.c src/log.c -ldl -o $(BUILD)/test_vpad_ps_level
 	./$(BUILD)/test_vpad_ps_level
 	clang -O2 -Isrc  tests/test_switch_protocol.c src/usb_controllers.c src/util.c src/log.c -o $(BUILD)/test_switch_protocol
 	./$(BUILD)/test_switch_protocol

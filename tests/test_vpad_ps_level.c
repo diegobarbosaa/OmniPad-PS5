@@ -127,7 +127,7 @@ int main(void) {
     vpad_update(1, &out); assert(clicks == 1);
     vpad_update(1, &out); assert(clicks == 1);
     clock_ms += 501; vpad_poll(clock_ms);
-    assert(g_slots[1].pad_state.buttons == 0); /* Original 500 ms policy. */
+    assert(g_slots[1].pad_state.buttons != 0); /* Integration: default-bound USB pads are event-driven (#18). */
     out.buttons = 0; vpad_update(1, &out);
     out.buttons = PAD_BTN_PS; vpad_update(1, &out); assert(clicks == 2);
     vpad_remove(0); assert(g_slots[0].status == VP_FREE);
