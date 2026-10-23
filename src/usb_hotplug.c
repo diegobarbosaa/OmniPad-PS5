@@ -1,5 +1,6 @@
 #include "usb_hotplug.h"
 #include "usb_controllers.h"
+#include "ps_chord_hold.h"
 #include "ps5_vpad.h"
 #include "log.h"
 #include "util.h"
@@ -32,6 +33,7 @@ typedef struct {
     usb_controller_type_t type;
     const char           *name;
     pad_conn_type_t       conn_type;
+    long                  stale_timeout_ms;
     pthread_t             thread;
     volatile int          stop_thread;
 
@@ -488,6 +490,9 @@ static void *usb_reader_worker(void *arg)
     long last_led_time = 0;
     long last_log_t = 0;
     int consecutive_errors = 0;
+    const int use_ps_hold = (dev->type == CTRL_GAMESIR_G7PRO);
+    const long hold_timeout_ms = dev->stale_timeout_ms;
+    omni_ps_chord_hold_t ps_hold = {0};
 
     log_line("usb_hotplug: Reader thread started for slot %d (%s on %s)",
              dev->slot, dev->name, dev->dev_path);
@@ -578,11 +583,20 @@ static void *usb_reader_worker(void *arg)
 #endif
             {
                 parsed = usb_parse_input_report(dev->type, report, (size_t)n, &st);
-                if (!parsed) {
+                if (!parsed && dev->type != CTRL_GAMESIR_G7PRO && dev->type != CTRL_GAMESIR_G7SE) {
                     parsed = usb_parse_input_report(CTRL_GENERIC_HID, report, (size_t)n, &st);
                 }
             }
             if (parsed) {
+                if (use_ps_hold) {
+                    if (vpad_is_live(dev->slot))
+                        omni_ps_hold_report(&ps_hold, &st, &st, cur_time, hold_timeout_ms);
+                    else {
+                        memset(&ps_hold, 0, sizeof(ps_hold));
+                        if ((st.buttons & (PAD_BTN_SHARE | PAD_BTN_OPTIONS)) == (PAD_BTN_SHARE | PAD_BTN_OPTIONS))
+                            st.buttons &= ~(PAD_BTN_SHARE | PAD_BTN_OPTIONS);
+                    }
+                }
                 st.conn_type = dev->conn_type;
                 st.vid = dev->vid;
                 st.pid = dev->pid;
@@ -590,9 +604,10 @@ static void *usb_reader_worker(void *arg)
                 /* If 2.4G dongle was in standby / slot freed, re-arm the virtual pad */
                 if (dev->conn_type == CONN_USB_DONGLE_24G && vpad_slot_is_free(dev->slot)) {
                     log_line("usb_hotplug: slot %d 2.4G controller active — re-arming virtual pad", dev->slot);
-                    vpad_add(dev->slot, dev->conn_type, dev->name);
+                    vpad_add_with_timeout(dev->slot, dev->conn_type, dev->name, dev->stale_timeout_ms);
                 }
-                vpad_update(dev->slot, &st);
+                if (use_ps_hold) vpad_update_level(dev->slot, &st);
+                else vpad_update(dev->slot, &st);
                 last_data_time = cur_time;
 
                 int btn_changed = (st.buttons != prev_buttons);
@@ -617,8 +632,12 @@ static void *usb_reader_worker(void *arg)
             }
         } else if (cur_time - last_data_time > 3000 && cur_time - last_log_t > 3000) {
             last_log_t = cur_time;
+#ifdef __PROSPERO__
             log_line("usb_hotplug: slot %d idle/standby (n=%d, use_fs=%d)",
                      dev->slot, n, dev->use_fs);
+#else
+            log_line("usb_hotplug: slot %d idle/standby (n=%d)", dev->slot, n);
+#endif
             /* If 2.4G dongle receives no packets for > 60 seconds (1 minute), release vpad to free user profile */
             if (dev->conn_type == CONN_USB_DONGLE_24G && (cur_time - last_data_time > 60000)) {
                 if (!vpad_slot_is_free(dev->slot)) {
@@ -628,7 +647,22 @@ static void *usb_reader_worker(void *arg)
             }
         }
 
-        usleep(250); /* Fast 0.25ms re-arm tick */
+        if (use_ps_hold) {
+            if (!vpad_is_live(dev->slot)) {
+                memset(&ps_hold, 0, sizeof(ps_hold));
+            } else {
+                pad_state_t held;
+                if (omni_ps_hold_tick(&ps_hold, &held, now_ms(), hold_timeout_ms)) {
+                    held.conn_type = dev->conn_type;
+                    held.vid = dev->vid;
+                    held.pid = dev->pid;
+                    snprintf(held.controller_name, sizeof(held.controller_name), "%s", dev->name);
+                    vpad_update_cached_level(dev->slot, &held);
+                }
+            }
+        }
+
+        usleep(250); /* fast re-arm tick (PR17 USB_FS reliability) */
     }
 
 
@@ -781,6 +815,7 @@ static void probe_usb_devices(void)
             sdev->vid = vid;
             sdev->pid = pid;
             sdev->type = ctype;
+            sdev->stale_timeout_ms = usb_controller_stale_timeout_ms(ctype);
             sdev->name = ctrl_name;
             sdev->stop_thread = 0;
             sdev->small_motor = usb_read_small_motor(vid, pid);
@@ -809,7 +844,7 @@ static void probe_usb_devices(void)
                                            strstr(ctrl_name, "Receiver") != NULL));
             sdev->conn_type = is_dongle ? CONN_USB_DONGLE_24G : CONN_USB_WIRED;
 
-            vpad_add(slot, sdev->conn_type, ctrl_name);
+            vpad_add_with_timeout(slot, sdev->conn_type, ctrl_name, sdev->stale_timeout_ms);
             usb_apply_remap(slot, vid, pid);
             pthread_create(&sdev->thread, NULL, usb_reader_worker, sdev);
         }

@@ -87,6 +87,8 @@ Desktop.ini
 # 8. Logs e Saídas de Depuração
 *.log
 *.txt.out
+!tests/*.c
+
 scratch/
 temp/
 tmp/
