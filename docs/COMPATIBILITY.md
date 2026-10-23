@@ -34,6 +34,10 @@ All peripherals in this table connect directly to any USB-A or USB-C port on the
 | **Nintendo Switch Pro Controller** | USB-C Cable (`057e:2009`) | 🟡 **Experimental (Spec-Implemented)** | 3-step USB activation handshake implemented. *(Direct BT in v1.1.0)*. |
 | **8BitDo Wireless USB Adapter (v1 & v2)** | USB 2.4G Dongle (`2dc8:*`) | 🟡 **Experimental (Spec-Implemented)** | Bridges controllers into standard USB HID/XInput. |
 | **8BitDo Ultimate 2C Wireless** | 2.4GHz USB Dongle or USB-C Cable (`2dc8:3106`) | 🟢 **Verified on PS5 Hardware (community)** | Briefly enumerates as a vendor HID device (`2dc8:3016`) and then as XInput (`2dc8:3106`). Sends no input until it gets the XInput player-LED command (`01 03 02`) on interrupt OUT endpoint `0x05`, and re-enumerates after ~10s without it. |
+| **GameSir G7 Pro** | 2.4GHz Dongle or USB-C (`3537:1022`) | 🟡 **Author-tested (PR #19), not bench-verified here** | Dedicated HID parser, 20 s stale-input retention, View+Menu (600 ms) → PS shortcut. **Known issue:** intermittent D-pad misses through the dongle (cause unconfirmed). |
+| **GameSir G7 SE** | USB (`3537:1082`) | 🟡 **Experimental (host-tested only)** | Dedicated HID parser (report ID `0x05`); not physically validated. |
+| **Mad Catz Street Fighter IV Wireless FightPad (PS3 RF pad)** | Original USB receiver (`0738:8828`) | 🟡 **Experimental (issue #10 capture, host-tested)** | Dedicated 27-byte HID parser built from the reporter's capture (buttons, system, 4 cardinal D-pad values). Diagonals and pressure bytes were not captured; diagonals assume a standard hat. |
+| **Nintendo Switch Pro / Switch-emulation dongles** | USB (`057e:2009`) | 🟡 **Experimental** | Full `0x30` report parser + bounded USB init/ACK handling (PR #20). An 8BitDo Ultimate 2 Wireless worked in this mode on the PR author's console (limited testing). |
 | **Logitech Gamepads (F310, F710)** | USB Cable / 2.4G Receiver | 🟡 **Experimental (Spec-Implemented)** | Operates in either XInput or standard HID mode. |
 | **Generic PC USB Gamepads** | Standard USB Cable | 🟡 **Experimental (Spec-Implemented)** | 10-byte standard HID descriptor normalization. |
 
