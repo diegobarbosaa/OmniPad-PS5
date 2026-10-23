@@ -373,6 +373,14 @@ static void *usb_reader_worker(void *arg)
         usb_fs_send_packet(dev, auth_done, sizeof(auth_done), 80);
         log_line("usb_hotplug: GIP power/init/led/auth sent on slot %d (pid 0x%04x)", dev->slot, dev->pid);
     }
+    if (dev->use_fs && dev->has_out && dev->type == CTRL_XBOX_XINPUT && !is_xbox_one) {
+        /* XInput hosts set the player LED on the interrupt OUT endpoint right after
+         * connecting. Without it the 8BitDo Ultimate 2C stays silent and re-enumerates
+         * after a few seconds; the SET_REPORT handshake does not count. */
+        static const uint8_t led_p1[] = {0x01, 0x03, 0x02};
+        int r = usb_fs_send_packet(dev, led_p1, sizeof(led_p1), 80);
+        log_line("usb_hotplug: XInput player LED sent on OUT for slot %d -> %d", dev->slot, r);
+    }
 #endif
 
     while (!dev->stop_thread) {

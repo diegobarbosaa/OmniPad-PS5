@@ -12,7 +12,8 @@
 
 OmniPad PS5 is developed and maintained by a solo developer. 
 - **Currently on the developer's physical test bench:** **Machenike G5 Pro Max SE** (tested with both its 2.4GHz USB Dongle and direct USB-C cable).
-- **Not yet physically tested on bench:** Xbox Series X\|S, Xbox One, Xbox 360, DualShock 4, DualShock 3, Switch Pro.
+- **Verified by community testers on FW 13.60:** DualShock 4 (USB cable, `054c:05c4`), 8BitDo Ultimate 2C Wireless (2.4GHz dongle and USB-C cable, `2dc8:3106`).
+- **Not yet physically tested on bench:** Xbox Series X\|S, Xbox One, Xbox 360, DualShock 3, Switch Pro.
 - **How support was built:** Decoders and handshakes were engineered from official USB HID/XInput/GIP documentation, open-source references, and verified via automated test suites (`tests/test_parsers.c`).
 - **Community Call for Help:** Because the developer is actively working to acquire real Xbox and PS4 controllers for physical verification, these profiles are currently classified as **EXPERIMENTAL**. If you test with physical hardware, your feedback, bug reports, and logs are deeply valued!
 
@@ -28,10 +29,11 @@ All peripherals in this table connect directly to any USB-A or USB-C port on the
 | **ShanWan 2.4G Gamepad** | 2.4GHz USB Dongle (`1a34:f517`) | 🟢 **Verified on PS5 Hardware** | Dongle shared with Machenike; dispatches via native XInput report parser. |
 | **Microsoft Xbox Series X\|S & Xbox One** | USB-C / Micro-USB Cable | 🟡 **Experimental (Spec-Implemented)** | Decodes GIP input reports (`0x20`) and Guide button (`0x07`). Requires data cable. *(Awaiting community validation)*. |
 | **Microsoft Xbox 360 Controller** | Wired USB Cable (`045e:028e`) | 🟡 **Experimental (Spec-Implemented)** | Standard XInput report parser and periodic LED keepalive implemented. |
-| **Sony DualShock 4** | Micro-USB Cable (`054c:05c4`/`09cc`) | 🟡 **Experimental (Spec-Implemented)** | 64-byte USB HID parser implemented. *(Direct BT in v1.1.0)*. |
+| **Sony DualShock 4** | Micro-USB Cable (`054c:05c4`/`09cc`) | 🟢 **Verified on PS5 Hardware (community)** | Verified with a CUH-ZCT1 (`054c:05c4`): 64-byte HID reports at 250Hz, buttons and sticks mapped correctly. `09cc` (CUH-ZCT2) not yet tested. *(Direct BT in v1.1.0)*. |
 | **Sony DualShock 3 (PS3)** | Mini-USB Cable (`054c:0268`) | 🟡 **Experimental (Spec-Implemented)** | Magic wake packet (`0x03f4`) implemented. *(No Bluetooth)*. |
 | **Nintendo Switch Pro Controller** | USB-C Cable (`057e:2009`) | 🟡 **Experimental (Spec-Implemented)** | 3-step USB activation handshake implemented. *(Direct BT in v1.1.0)*. |
 | **8BitDo Wireless USB Adapter (v1 & v2)** | USB 2.4G Dongle (`2dc8:*`) | 🟡 **Experimental (Spec-Implemented)** | Bridges controllers into standard USB HID/XInput. |
+| **8BitDo Ultimate 2C Wireless** | 2.4GHz USB Dongle or USB-C Cable (`2dc8:3106`) | 🟢 **Verified on PS5 Hardware (community)** | Briefly enumerates as a vendor HID device (`2dc8:3016`) and then as XInput (`2dc8:3106`). Sends no input until it gets the XInput player-LED command (`01 03 02`) on interrupt OUT endpoint `0x05`, and re-enumerates after ~10s without it. |
 | **Logitech Gamepads (F310, F710)** | USB Cable / 2.4G Receiver | 🟡 **Experimental (Spec-Implemented)** | Operates in either XInput or standard HID mode. |
 | **Generic PC USB Gamepads** | Standard USB Cable | 🟡 **Experimental (Spec-Implemented)** | 10-byte standard HID descriptor normalization. |
 
