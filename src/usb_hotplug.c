@@ -38,6 +38,7 @@ typedef struct {
     struct usb_fs_endpoint endpoints[4];
     uint8_t               in_index;
     uint8_t               out_index;
+    uint8_t               in_armed;
     int                   has_out;
     int                   use_fs;
     void                 *fs_frame[4];
@@ -218,25 +219,36 @@ static int usb_fs_setup_device(usb_slot_device_t *sdev)
 
 static int usb_fs_recv_packet(usb_slot_device_t *dev, uint8_t *buffer, uint32_t length, int timeout_ms)
 {
+    (void)timeout_ms;
     if (!dev->use_fs) return -1;
     struct usb_fs_endpoint *ep = &dev->endpoints[dev->in_index];
-    uint32_t ask_len = length > 64 ? 64 : length;
-    dev->fs_len[dev->in_index] = ask_len;
-    ep->timeout = (uint16_t)timeout_ms;
 
-    struct usb_fs_start start;
-    memset(&start, 0, sizeof(start));
-    start.ep_index = dev->in_index;
-    if (ioctl(dev->fd, USB_FS_START, &start) != 0) {
-        if (errno != EBUSY) return -1;
+    if (!dev->in_armed) {
+        uint32_t ask_len = length > 64 ? 64 : length;
+        dev->fs_len[dev->in_index] = ask_len;
+        ep->timeout = 0; /* USB_FS_TIMEOUT_NONE: keep transfer armed without kernel timer aborts */
+
+        struct usb_fs_start start;
+        memset(&start, 0, sizeof(start));
+        start.ep_index = dev->in_index;
+        if (ioctl(dev->fd, USB_FS_START, &start) != 0) {
+            if (errno != EBUSY) return -1;
+        }
+        dev->in_armed = 1;
     }
 
-    int spins = timeout_ms / 4 + 1;
+    int spins = 4;
     while (spins-- > 0) {
         struct usb_fs_complete complete;
         memset(&complete, 0, sizeof(complete));
         complete.ep_index = dev->in_index;
         if (ioctl(dev->fd, USB_FS_COMPLETE, &complete) == 0) {
+            if (complete.ep_index != dev->in_index) {
+                /* An OUT transfer completed; keep checking for our IN endpoint */
+                spins++;
+                continue;
+            }
+            dev->in_armed = 0;
             if (ep->status == USB_ERR_NORMAL_COMPLETION || ep->status == USB_ERR_SHORT_XFER) {
                 uint32_t n = dev->fs_len[dev->in_index];
                 if (n > length) n = length;
@@ -245,9 +257,10 @@ static int usb_fs_recv_packet(usb_slot_device_t *dev, uint8_t *buffer, uint32_t 
             }
             return 0;
         }
-        if (errno == EBUSY || errno == ETIMEDOUT || errno == EAGAIN || errno == EWOULDBLOCK) {
+        if (errno == EBUSY || errno == ETIMEDOUT || errno == EAGAIN) {
             /* Transfer still in progress or waiting for packet — continue select loop */
         } else {
+            dev->in_armed = 0;
             return -1;
         }
 
@@ -258,7 +271,7 @@ static int usb_fs_recv_packet(usb_slot_device_t *dev, uint8_t *buffer, uint32_t 
         FD_SET(dev->fd, &rset);
         FD_SET(dev->fd, &wset);
         wait.tv_sec = 0;
-        wait.tv_usec = 4000;
+        wait.tv_usec = 1000;
         select(dev->fd + 1, &rset, &wset, NULL, &wait);
     }
     return 0;
@@ -325,6 +338,9 @@ static void *usb_reader_worker(void *arg)
     usb_slot_device_t *dev = (usb_slot_device_t *)arg;
     uint8_t report[256];
     pad_state_t st;
+    int guide_down = 0;
+    uint32_t prev_buttons = 0;
+    pad_state_neutral(&st);
     
     long last_data_time = now_ms();
     long last_led_time = 0;
@@ -338,18 +354,24 @@ static void *usb_reader_worker(void *arg)
     int is_xbox_one = (dev->type == CTRL_XBOX_XINPUT && dev->vid == 0x045e && dev->pid != 0x028e);
     int is_genuine_x360 = (dev->type == CTRL_XBOX_XINPUT && dev->vid == 0x045e && dev->pid == 0x028e);
     if (dev->use_fs && dev->has_out && is_xbox_one) {
-        static const uint8_t power_on[] = {0x05, 0x20, 0x00, 0x01, 0x00};
-        static const uint8_t s_init[] = {
-            0x05, 0x20, 0x00, 0x0f, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x55, 0x53, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-        };
-        static const uint8_t led_on[] = {0x0a, 0x20, 0x00, 0x03, 0x00, 0x01, 0x14};
+        uint8_t seq = 0;
+        uint8_t power_on[] = {0x05, 0x20, seq++, 0x01, 0x00};
         usb_fs_send_packet(dev, power_on, sizeof(power_on), 80);
         usleep(10000);
-        usb_fs_send_packet(dev, s_init, sizeof(s_init), 80);
-        usleep(10000);
+        if (dev->pid == 0x0b00 || dev->pid == 0x02ea) {
+            uint8_t s_init[] = {
+                0x05, 0x20, seq++, 0x0f, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x55, 0x53, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            };
+            usb_fs_send_packet(dev, s_init, sizeof(s_init), 80);
+            usleep(10000);
+        }
+        uint8_t led_on[] = {0x0a, 0x20, seq++, 0x03, 0x00, 0x01, 0x14};
         usb_fs_send_packet(dev, led_on, sizeof(led_on), 80);
-        log_line("usb_hotplug: GIP power/s_init/led sent on slot %d", dev->slot);
+        usleep(10000);
+        uint8_t auth_done[] = {0x06, 0x20, seq++, 0x02, 0x01, 0x00};
+        usb_fs_send_packet(dev, auth_done, sizeof(auth_done), 80);
+        log_line("usb_hotplug: GIP power/init/led/auth sent on slot %d (pid 0x%04x)", dev->slot, dev->pid);
     }
 #endif
 
@@ -368,7 +390,7 @@ static void *usb_reader_worker(void *arg)
         int n = 0;
 #ifdef __PROSPERO__
         if (dev->use_fs) {
-            n = usb_fs_recv_packet(dev, report, sizeof(report), 15);
+            n = usb_fs_recv_packet(dev, report, sizeof(report), 0);
             if (n > 0 && is_xbox_one) {
                 ack_gip_packet(dev, report, n);
             }
@@ -388,9 +410,26 @@ static void *usb_reader_worker(void *arg)
 
         if (n > 0) {
             consecutive_errors = 0;
-            int parsed = usb_parse_input_report(dev->type, report, (size_t)n, &st);
-            if (!parsed) {
-                parsed = usb_parse_input_report(CTRL_GENERIC_HID, report, (size_t)n, &st);
+            int parsed = 0;
+#ifdef __PROSPERO__
+            if (is_xbox_one) {
+                int gr = usb_parse_gip_report(report, (size_t)n, &st, &guide_down);
+                if (gr == 1 || gr == 2) {
+                    if (guide_down) st.buttons |= PAD_BTN_PS;
+                    else st.buttons &= ~PAD_BTN_PS;
+                    parsed = 1;
+                } else {
+                    /* Non-input GIP system/battery/ack frame — ignore without resetting st */
+                    usleep(250);
+                    continue;
+                }
+            } else
+#endif
+            {
+                parsed = usb_parse_input_report(dev->type, report, (size_t)n, &st);
+                if (!parsed) {
+                    parsed = usb_parse_input_report(CTRL_GENERIC_HID, report, (size_t)n, &st);
+                }
             }
             if (parsed) {
                 st.conn_type = dev->conn_type;
@@ -405,7 +444,9 @@ static void *usb_reader_worker(void *arg)
                 vpad_update(dev->slot, &st);
                 last_data_time = cur_time;
 
-                if (st.buttons != 0 && (cur_time - last_log_t > 300)) {
+                int btn_changed = (st.buttons != prev_buttons);
+                prev_buttons = st.buttons;
+                if (btn_changed || (st.buttons != 0 && (cur_time - last_log_t > 500))) {
                     last_log_t = cur_time;
                     log_line("usb_hotplug: slot %d button press 0x%08x (LX=%d LY=%d)",
                              dev->slot, (unsigned)st.buttons, st.lx, st.ly);
@@ -436,7 +477,7 @@ static void *usb_reader_worker(void *arg)
             }
         }
 
-        usleep(4000); /* ~250 Hz polling tick */
+        usleep(250); /* Fast 0.25ms re-arm tick */
     }
 
 

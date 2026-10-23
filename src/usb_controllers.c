@@ -180,6 +180,23 @@ uint8_t axis16_to_u8(int16_t val, int invert_y)
     return (uint8_t)(invert_y ? (255 - v) : v);
 }
 
+int usb_parse_gip_report(const uint8_t *data, size_t len, pad_state_t *st, int *guide_down)
+{
+    if (!data || len < 4) return 0;
+    if (data[0] == 0x20) {
+        if (len < 18 || !st) return 0;
+        if (!usb_parse_input_report(CTRL_XBOX_XINPUT, data, len, st)) return 0;
+        st->buttons &= ~PAD_BTN_PS;
+        return 1;
+    }
+    if (data[0] == 0x07) {
+        if (len < 5 || !guide_down) return 0;
+        *guide_down = (data[4] & 0x03) ? 1 : 0;
+        return 2;
+    }
+    return 0;
+}
+
 int usb_parse_input_report(usb_controller_type_t type, const uint8_t *data, size_t len, pad_state_t *st)
 {
     if (!data || len == 0 || !st) return 0;
