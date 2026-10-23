@@ -1,13 +1,17 @@
 #include "web.h"
 #include "ps5_vpad.h"
 #include "shellui_inject.h"
+#include "bt_host.h"
+#include "usb_hotplug.h"
 #include "version.h"
 #include "log.h"
 #include "util.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -19,170 +23,95 @@
 
 static int g_server_fd = -1;
 
-static const char HTML_INDEX[] =
-"<!DOCTYPE html>\n"
-"<html lang=\"en\">\n"
-"<head>\n"
-"  <meta charset=\"UTF-8\">\n"
-"  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover\">\n"
-"  <meta http-equiv=\"Cache-Control\" content=\"no-cache, no-store, must-revalidate\">\n"
-"  <meta http-equiv=\"Pragma\" content=\"no-cache\">\n"
-"  <meta http-equiv=\"Expires\" content=\"0\">\n"
-"  <title>OmniPad PS5 Universal</title>\n"
-"  <style>\n"
-"    :root {\n"
-"      --bg: #070a12;\n"
-"      --card: rgba(18, 25, 41, 0.75);\n"
-"      --accent: #3b82f6;\n"
-"      --accent-glow: rgba(59, 130, 246, 0.35);\n"
-"      --success: #10b981;\n"
-"      --warning: #f59e0b;\n"
-"      --danger: #ef4444;\n"
-"      --text: #f8fafc;\n"
-"      --text-muted: #94a3b8;\n"
-"      --border: rgba(255, 255, 255, 0.08);\n"
-"    }\n"
-"    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }\n"
-"    body { background: radial-gradient(circle at 50% 0%, #152238 0%, var(--bg) 100%); color: var(--text); min-height: 100vh; padding: clamp(14px, 3.5vw, 28px); }\n"
-"    .container { max-width: 1050px; margin: 0 auto; }\n"
-"    header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding-bottom: 20px; border-bottom: 1px solid var(--border); margin-bottom: 24px; }\n"
-"    .logo-group h1 { font-size: clamp(22px, 5vw, 28px); font-weight: 800; background: linear-gradient(135deg, #60a5fa, #c084fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent; letter-spacing: -0.5px; }\n"
-"    .logo-group p { font-size: 13px; color: var(--text-muted); margin-top: 3px; }\n"
-"    .badge-fw { background: rgba(59, 130, 246, 0.12); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.25); padding: 4px 12px; border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }\n"
-"    .actions-bar { display: flex; gap: 10px; margin-bottom: 24px; flex-wrap: wrap; }\n"
-"    button { background: var(--card); color: var(--text); border: 1px solid var(--border); padding: 10px 18px; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s ease; display: inline-flex; align-items: center; justify-content: center; gap: 8px; backdrop-filter: blur(12px); min-height: 42px; }\n"
-"    button:active { transform: scale(0.97); }\n"
-"    button:hover { border-color: rgba(255, 255, 255, 0.25); background: rgba(255, 255, 255, 0.06); }\n"
-"    button.btn-danger { color: #f87171; border-color: rgba(239, 68, 68, 0.3); background: rgba(239, 68, 68, 0.1); }\n"
-"    button.btn-danger:hover { background: rgba(239, 68, 68, 0.2); }\n"
-"    .slots-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-bottom: 28px; }\n"
-"    .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 20px; backdrop-filter: blur(16px); box-shadow: 0 8px 24px rgba(0,0,0,0.25); display: flex; flex-direction: column; transition: border-color 0.2s, transform 0.2s; }\n"
-"    .card:hover { transform: translateY(-2px); }\n"
-"    .card.connected { border-color: rgba(16, 185, 129, 0.35); background: rgba(16, 26, 46, 0.85); }\n"
-"    .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }\n"
-"    .slot-label { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-muted); }\n"
-"    .dot { width: 10px; height: 10px; border-radius: 50%; background: #334155; display: inline-block; }\n"
-"    .dot.active { background: var(--success); box-shadow: 0 0 12px var(--success); }\n"
-"    .dot.pending { background: var(--warning); box-shadow: 0 0 12px var(--warning); }\n"
-"    .pad-title { font-size: 16px; font-weight: 700; color: #fff; margin-bottom: 10px; min-height: 22px; word-break: break-word; }\n"
-"    .pills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }\n"
-"    .pill { display: inline-flex; align-items: center; gap: 4px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; font-size: 11px; font-weight: 600; color: #cbd5e1; }\n"
-"    .pill.green { background: rgba(16, 185, 129, 0.12); color: #6ee7b7; border-color: rgba(16, 185, 129, 0.3); }\n"
-"    .pill.blue { background: rgba(59, 130, 246, 0.12); color: #93c5fd; border-color: rgba(59, 130, 246, 0.3); }\n"
-"    .meta-list { font-size: 13px; color: var(--text-muted); line-height: 1.8; margin-top: auto; }\n"
-"    .meta-list span { color: var(--text); font-weight: 600; }\n"
-"    .empty-state { text-align: center; color: #64748b; font-size: 13px; font-weight: 500; padding: 24px 0; }\n"
-"    footer { text-align: center; color: #64748b; font-size: 12px; margin-top: 36px; line-height: 1.6; }\n"
-"  </style>\n"
-"</head>\n"
-"<body>\n"
-"  <div class=\"container\">\n"
-"    <header>\n"
-"      <div class=\"logo-group\">\n"
-"        <h1>OmniPad PS5 Universal</h1>\n"
-"        <p>Universal Controller Hub &bull; DualSense Emulation &bull; Zero Lag 250Hz</p>\n"
-"      </div>\n"
-#define STR_HELPER(x) #x
-#define STR(x) STR_HELPER(x)
-"      <div class=\"badge-fw\">v" ANYPAD_VERSION "-b" STR(ANYPAD_BUILD) " &bull; FW 7.00 - 13.60</div>\n"
-"    </header>\n"
-"\n"
-"    <div class=\"actions-bar\">\n"
-"      <button onclick=\"window.open('/api/log', '_blank')\">\n"
-"        <span>&#128220;</span> View Logs\n"
-"      </button>\n"
-"      <button onclick=\"refreshData()\">\n"
-"        <span>&#8635;</span> Refresh\n"
-"      </button>\n"
-"      <button class=\"btn-danger\" onclick=\"disconnectAll()\">\n"
-"        <span>&#128268;</span> Disconnect Controllers\n"
-"      </button>\n"
-"    </div>\n"
-"\n"
-"    <div class=\"slots-grid\" id=\"slotsContainer\">\n"
-"      <!-- Filled dynamically -->\n"
-"    </div>\n"
-"\n"
-"    <footer>\n"
-"      OmniPad PS5 Universal v" ANYPAD_VERSION " (Build " STR(ANYPAD_BUILD) ") &bull; Zero Lag 250Hz &bull; Universal Gamepad Engine\n"
-"    </footer>\n"
-"  </div>\n"
-"\n"
-"  <script>\n"
-"    async function refreshData() {\n"
-"      try {\n"
-"        const res = await fetch('/api/status');\n"
-"        if (!res.ok) return;\n"
-"        const data = await res.json();\n"
-"        render(data);\n"
-"      } catch (e) {}\n"
-"    }\n"
-"\n"
-"    function render(data) {\n"
-"      const container = document.getElementById('slotsContainer');\n"
-"      container.innerHTML = '';\n"
-"\n"
-"      data.slots.forEach((s, idx) => {\n"
-"        const card = document.createElement('div');\n"
-"        const isLive = s.status === 3;\n"
-"        const isPending = s.status === 1 || s.status === 2;\n"
-"        card.className = 'card' + (isLive ? ' connected' : '');\n"
-"        const dotClass = isLive ? 'active' : (isPending ? 'pending' : '');\n"
-"        const vdaHandle = s.handle >= 0 ? s.handle : (s.alt_handle > 0 ? s.alt_handle : '--');\n"
-"        \n"
-"        let connBadge = '';\n"
-"        if (s.conn === 4) {\n"
-"          connBadge = '<span class=\"pill blue\">&#128225; 2.4G Wireless Dongle</span>';\n"
-"        } else if (s.conn === 3) {\n"
-"          connBadge = '<span class=\"pill green\">&#128268; USB-C Wired</span>';\n"
-"        } else if (s.conn === 1 || s.conn === 2) {\n"
-"          connBadge = '<span class=\"pill blue\">&#128246; Bluetooth Direct</span>';\n"
-"        } else if (isLive) {\n"
-"          connBadge = '<span class=\"pill blue\">&#127918; Connected</span>';\n"
-"        }\n"
-"\n"
-"        if (isLive) {\n"
-"          card.innerHTML = `\n"
-"            <div class=\"card-header\">\n"
-"              <span class=\"slot-label\">Player ${idx + 1}</span>\n"
-"              <span class=\"dot ${dotClass}\"></span>\n"
-"            </div>\n"
-"            <div class=\"pad-title\">${s.name || 'Virtual DualSense'}</div>\n"
-"            <div class=\"pills\">\n"
-"              ${connBadge}\n"
-"              <span class=\"pill blue\">&#9889; 250Hz Zero-Lag</span>\n"
-"            </div>\n"
-"            <div class=\"meta-list\">\n"
-"              Status: <span>Connected & Ready</span><br>\n"
-"              Handle VDA: <span>${vdaHandle}</span><br>\n"
-"              User: <span>${s.user_id ? '0x' + s.user_id.toString(16) : 'Primary'}</span><br>\n"
-"              Injected: <span>${s.injected || 0} frames</span>\n"
-"            </div>\n"
-"          `;\n"
-"        } else {\n"
-"          card.innerHTML = `\n"
-"            <div class=\"card-header\">\n"
-"              <span class=\"slot-label\">Player ${idx + 1}</span>\n"
-"              <span class=\"dot ${dotClass}\"></span>\n"
-"            </div>\n"
-"            <div class=\"pad-title\" style=\"color:#64748b;\">${isPending ? 'Identifying...' : 'Slot Available'}</div>\n"
-"            <div class=\"empty-state\">${isPending ? 'Syncing with console...' : 'Waiting for Controller or 2.4G Dongle'}</div>\n"
-"          `;\n"
-"        }\n"
-"        container.appendChild(card);\n"
-"      });\n"
-"    }\n"
-"\n"
-"    async function disconnectAll() {\n"
-"      await fetch('/api/disconnect?slot=-1', { method: 'POST' });\n"
-"      refreshData();\n"
-"    }\n"
-"\n"
-"    setInterval(refreshData, 1000);\n"
-"    refreshData();\n"
-"  </script>\n"
-"</body>\n"
-"</html>\n";
+/* The dashboard (web/index.html) is embedded at build time by
+ * tools/embed_html.py into src/web_page.c. One page serves everything:
+ * controller slots, Bluetooth pairing, button mappings and settings. */
+extern const unsigned char web_page_html[];
+extern const unsigned int  web_page_html_len;
+typedef struct { const char *name, *mime; const unsigned char *data; unsigned int len; } web_asset_t;
+extern const web_asset_t web_assets[];
+
+/* GET /img/<name>: an embedded image (web/img/). Returns 0 if unknown. */
+static int send_asset(int cfd, const char *req)
+{
+    const char *p = req + 9;                      /* after "GET /img/" */
+    size_t n = 0;
+    while (p[n] && p[n] != ' ' && p[n] != '?') n++;
+    for (const web_asset_t *a = web_assets; a->name; a++) {
+        if (strlen(a->name) != n || strncmp(a->name, p, n) != 0) continue;
+        char hdr[256];
+        int hl = snprintf(hdr, sizeof hdr,
+            "HTTP/1.1 200 OK\r\nContent-Type: %s\r\n"
+            "Cache-Control: public, max-age=86400\r\nContent-Length: %u\r\n"
+            "Connection: close\r\n\r\n", a->mime, a->len);
+        write(cfd, hdr, (size_t)hl);
+        size_t off = 0;
+        while (off < a->len) {
+            ssize_t w = write(cfd, a->data + off, a->len - off);
+            if (w <= 0) break;
+            off += (size_t)w;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static void send_page(int cfd)
+{
+    char hdr[256];
+    int hl = snprintf(hdr, sizeof hdr,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html; charset=UTF-8\r\n"
+        "Cache-Control: no-cache, no-store, must-revalidate\r\n"
+        "Pragma: no-cache\r\n"
+        "Expires: 0\r\n"
+        "Content-Length: %u\r\n"
+        "Connection: close\r\n\r\n", web_page_html_len);
+    write(cfd, hdr, (size_t)hl);
+    /* Chunked write to tolerate short write() returns on slow clients. */
+    size_t off = 0;
+    while (off < web_page_html_len) {
+        ssize_t w = write(cfd, web_page_html + off, web_page_html_len - off);
+        if (w <= 0) break;
+        off += (size_t)w;
+    }
+}
+
+/* Parses ?mac=AA:BB:CC:DD:EE:FF from a request line (also AA-BB-.., AABB..,
+ * and %3A-encoded colons) into controller byte order (mac[0] = last octet).
+ * Returns 1 on success. */
+static int parse_mac_param(const char *req, unsigned char mac[6])
+{
+    const char *p = strstr(req, "mac=");
+    unsigned v[6];
+    int k = 0;
+    if (!p) return 0;
+    p += 4;
+    while (k < 6) {
+        int hi, lo;
+        if (!isxdigit((unsigned char)p[0]) || !isxdigit((unsigned char)p[1])) return 0;
+        hi = isdigit((unsigned char)p[0]) ? p[0] - '0' : (tolower((unsigned char)p[0]) - 'a' + 10);
+        lo = isdigit((unsigned char)p[1]) ? p[1] - '0' : (tolower((unsigned char)p[1]) - 'a' + 10);
+        v[k++] = (unsigned)(hi << 4 | lo);
+        p += 2;
+        if (k == 6) break;
+        if (*p == ':' || *p == '-') p++;
+        else if (p[0] == '%' && p[1] == '3' && (p[2] == 'A' || p[2] == 'a')) p += 3;
+    }
+    for (int i = 0; i < 6; i++) mac[i] = (unsigned char)v[5 - i];
+    return 1;
+}
+
+static void send_json(int cfd, int code, const char *body)
+{
+    char hdr[256];
+    int hl = snprintf(hdr, sizeof hdr,
+        "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\n"
+        "Access-Control-Allow-Origin: *\r\nCache-Control: no-store\r\nContent-Length: %zu\r\n"
+        "Connection: close\r\n\r\n", code, code == 200 ? "OK" : code == 404 ? "Not Found" : "Error", strlen(body));
+    write(cfd, hdr, (size_t)hl);
+    write(cfd, body, strlen(body));
+}
 
 #ifndef SO_REUSEPORT
 #define SO_REUSEPORT 0x0200
@@ -254,10 +183,30 @@ static void handle_client(int cfd)
     int pr = poll(&pfd, 1, 100);
     if (pr <= 0) { close(cfd); return; }
 
-    char req[2048];
+    char req[4096];
     ssize_t n = read(cfd, req, sizeof(req) - 1);
     if (n <= 0) { close(cfd); return; }
     req[n] = '\0';
+    /* A POST body may come in a later packet than the headers: keep reading
+     * (up to 150 ms; this runs on the main loop) until Content-Length bytes are in. */
+    {
+        char *hdr_end = strstr(req, "\r\n\r\n");
+        const char *cl = strstr(req, "Content-Length:");
+        if (!cl) cl = strstr(req, "content-length:");
+        if (hdr_end && cl && cl < hdr_end) {
+            long want = atol(cl + 15);
+            long have = (long)(req + n - (hdr_end + 4));
+            while (want > have && n < (ssize_t)sizeof(req) - 1) {
+                struct pollfd more = { .fd = cfd, .events = POLLIN };
+                if (poll(&more, 1, 150) <= 0) break;
+                ssize_t m = read(cfd, req + n, sizeof(req) - 1 - (size_t)n);
+                if (m <= 0) break;
+                n += m;
+                have += m;
+                req[n] = '\0';
+            }
+        }
+    }
 
     char res[4096];
     int res_len = 0;
@@ -284,12 +233,25 @@ static void handle_client(int cfd)
         for (int i = 0; i < MAX_SLOTS; i++) {
             vpad_slot_info_t info;
             vpad_get_slot_info(i, &info);
+            /* Bluetooth pads also report who they are, so the page can show
+             * the right picture and that controller's own settings. */
+            uint16_t vid = 0, pid = 0;
+            unsigned char mac[6] = {0};
+            char macs[18] = "", sid[20] = "";
+            int is_usb = info.conn_type == CONN_USB_WIRED || info.conn_type == CONN_USB_DONGLE_24G;
+            if (info.status == VP_READY && !is_usb && bt_host_slot_ids(i, &vid, &pid, mac)) {
+                snprintf(macs, sizeof macs, "%02X:%02X:%02X:%02X:%02X:%02X", mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
+                snprintf(sid, sizeof sid, "%02X%02X%02X%02X%02X%02X", mac[5], mac[4], mac[3], mac[2], mac[1], mac[0]);
+            } else if (info.status == VP_READY && is_usb && usb_hotplug_slot_ids(i, &vid, &pid)) {
+                /* USB pads have no unique id: settings are per model. */
+                snprintf(sid, sizeof sid, "USB_%04X_%04X", vid, pid);
+            }
             jlen += snprintf(json + jlen, sizeof(json) - (size_t)jlen,
-                "%s{\"status\":%d,\"name\":\"%s\",\"conn\":%d,\"handle\":%d,\"alt_handle\":%d,\"user_id\":%u,\"battery\":%d,\"charging\":%d,\"injected\":%u}",
+                "%s{\"status\":%d,\"name\":\"%s\",\"conn\":%d,\"handle\":%d,\"alt_handle\":%d,\"user_id\":%u,\"battery\":%d,\"charging\":%d,\"injected\":%u,\"vid\":%u,\"pid\":%u,\"mac\":\"%s\",\"id\":\"%s\"}",
                 i > 0 ? "," : "",
                 info.status, info.name, info.conn_type, info.handle, info.alt_handle,
                 (unsigned)info.user_id, info.battery_level, info.battery_charging,
-                (unsigned)info.packets_injected);
+                (unsigned)info.packets_injected, vid, pid, macs, sid);
         }
         snprintf(json + jlen, sizeof(json) - (size_t)jlen, "]}");
 
@@ -485,19 +447,326 @@ static void handle_client(int cfd)
             strlen(ok), ok);
         write(cfd, res, (size_t)res_len);
     }
-    else {
-        /* Serve Web Dashboard HTML */
-        size_t hlen = sizeof(HTML_INDEX) - 1;
+    /* ---- Bluetooth control endpoints ---- */
+    else if (strncmp(req, "GET /api/bt/status", 18) == 0) {
+        char body[512];
+        int up = bt_host_is_up();
+        int left = bt_host_get_pairing_seconds_left();
+        int blen = snprintf(body, sizeof body,
+            "{\"up\":%s,\"pairing\":%s,\"pairing_left\":%d}",
+            up ? "true":"false", left > 0 ? "true":"false", left);
         res_len = snprintf(res, sizeof(res),
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: text/html; charset=UTF-8\r\n"
-            "Cache-Control: no-cache, no-store, must-revalidate\r\n"
-            "Pragma: no-cache\r\n"
-            "Expires: 0\r\n"
-            "Content-Length: %zu\r\n"
-            "Connection: close\r\n\r\n", hlen);
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\nContent-Length: %d\r\n"
+            "Connection: close\r\n\r\n%s", blen, body);
         write(cfd, res, (size_t)res_len);
-        write(cfd, HTML_INDEX, hlen);
+    }
+    else if (strncmp(req, "POST /api/bt/scan", 17) == 0) {
+        /* Open the BT chip and run inquiry WITHOUT a MAC filter: on_discover
+         * records every gamepad-class device it hears; dashboard reads
+         * /api/bt/discovered to render the list. Still auto-pairs any pad
+         * in pairing mode; the dashboard "Pair this one" flow swaps in a
+         * MAC filter via /api/bt/pair?mac=... before clicking. */
+        int seconds = 90;
+        const char *p = strstr(req, "seconds=");
+        if (p) seconds = atoi(p + 8);
+        if (seconds <= 0 || seconds > 300) seconds = 90;
+        /* bt_host_scan clears any MAC filter left by a scoped pairing. */
+        int ok = bt_host_scan(seconds);
+        const char *body = ok ? "{\"status\":\"scanning\"}" : "{\"status\":\"bt_init_failed\"}";
+        res_len = snprintf(res, sizeof(res),
+            "HTTP/1.1 %s\r\nContent-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\nContent-Length: %zu\r\n"
+            "Connection: close\r\n\r\n%s",
+            ok ? "200 OK" : "503 Service Unavailable", strlen(body), body);
+        write(cfd, res, (size_t)res_len);
+    }
+    else if (strncmp(req, "POST /api/bt/haptic", 19) == 0) {
+        const char *p = strstr(req, "on=");
+        int on = p && (p[3] == '1' || p[3] == 't');
+        bt_haptic_enable(on);
+        char body[64];
+        int blen = snprintf(body, sizeof body, "{\"haptic\":%s}", on ? "true" : "false");
+        res_len = snprintf(res, sizeof(res),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\nContent-Length: %d\r\n"
+            "Connection: close\r\n\r\n%s", blen, body);
+        write(cfd, res, (size_t)res_len);
+    }
+    else if (strncmp(req, "POST /api/bt/idle_release", 25) == 0) {
+        const char *p = strstr(req, "minutes=");
+        int m = p ? atoi(p + 8) : 5;
+        bt_host_idle_release_set(m);
+        char body[64];
+        int blen = snprintf(body, sizeof body, "{\"minutes\":%d}", bt_host_idle_release_get());
+        res_len = snprintf(res, sizeof(res),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\nContent-Length: %d\r\n"
+            "Connection: close\r\n\r\n%s", blen, body);
+        write(cfd, res, (size_t)res_len);
+    }
+    else if (strncmp(req, "GET /api/bt/idle_release", 24) == 0) {
+        char body[64];
+        int blen = snprintf(body, sizeof body, "{\"minutes\":%d}", bt_host_idle_release_get());
+        res_len = snprintf(res, sizeof(res),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\nContent-Length: %d\r\n"
+            "Connection: close\r\n\r\n%s", blen, body);
+        write(cfd, res, (size_t)res_len);
+    }
+    else if (strncmp(req, "GET /api/bt/haptic/settings", 27) == 0) {
+        float gain; int eager;
+        bt_haptic_settings_get(&gain, &eager);
+        char body[96];
+        int blen = snprintf(body, sizeof body,
+            "{\"gain\":%.2f,\"eager\":%s}", gain, eager ? "true" : "false");
+        res_len = snprintf(res, sizeof(res),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\nContent-Length: %d\r\n"
+            "Connection: close\r\n\r\n%s", blen, body);
+        write(cfd, res, (size_t)res_len);
+    }
+    else if (strncmp(req, "POST /api/bt/haptic/settings", 28) == 0) {
+        float gain; int eager;
+        bt_haptic_settings_get(&gain, &eager);
+        const char *p = strstr(req, "gain=");
+        if (p) gain = (float)atof(p + 5);
+        p = strstr(req, "eager=");
+        if (p) eager = (p[6] == '1' || p[6] == 't');
+        bt_haptic_settings_set(gain, eager);
+        bt_haptic_settings_get(&gain, &eager);
+        char body[96];
+        int blen = snprintf(body, sizeof body,
+            "{\"gain\":%.2f,\"eager\":%s}", gain, eager ? "true" : "false");
+        res_len = snprintf(res, sizeof(res),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\nContent-Length: %d\r\n"
+            "Connection: close\r\n\r\n%s", blen, body);
+        write(cfd, res, (size_t)res_len);
+    }
+    else if (strncmp(req, "GET /api/bt/haptic", 18) == 0) {
+        char body[64];
+        int blen = snprintf(body, sizeof body, "{\"haptic\":%s}",
+                            bt_haptic_is_enabled() ? "true" : "false");
+        res_len = snprintf(res, sizeof(res),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\nContent-Length: %d\r\n"
+            "Connection: close\r\n\r\n%s", blen, body);
+        write(cfd, res, (size_t)res_len);
+    }
+    else if (strncmp(req, "GET /api/vpad/type", 18) == 0) {
+        int t = vpad_get_device_type();
+        char body[64];
+        int blen = snprintf(body, sizeof body,
+            "{\"type\":%d,\"name\":\"%s\"}",
+            t, t == 2 ? "DualShock 4" : "DualSense");
+        res_len = snprintf(res, sizeof(res),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\nContent-Length: %d\r\n"
+            "Connection: close\r\n\r\n%s", blen, body);
+        write(cfd, res, (size_t)res_len);
+    }
+    else if (strncmp(req, "POST /api/vpad/type", 19) == 0) {
+        const char *p = strstr(req, "type=");
+        int t = p ? atoi(p + 5) : 0;
+        int before = vpad_get_device_type();
+        vpad_set_device_type(t);
+        int after = vpad_get_device_type();
+        int changed = (before != after);
+        char body[128];
+        int blen = snprintf(body, sizeof body,
+            "{\"type\":%d,\"name\":\"%s\",\"changed\":%s,\"note\":\"applies to next virtual pad; reconnect\"}",
+            after, after == 2 ? "DualShock 4" : "DualSense", changed ? "true" : "false");
+        res_len = snprintf(res, sizeof(res),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\nContent-Length: %d\r\n"
+            "Connection: close\r\n\r\n%s", blen, body);
+        write(cfd, res, (size_t)res_len);
+    }
+    else if (strncmp(req, "GET /api/bt/discovered", 22) == 0) {
+        bt_discovered_t rows[16];
+        int n = bt_host_discovered(rows, 16);
+        char body[1024]; int blen = 0;
+        blen += snprintf(body + blen, sizeof body - blen, "{\"devices\":[");
+        long now = now_ms();
+        for (int i = 0; i < n && blen < (int)sizeof body - 100; i++) {
+            blen += snprintf(body + blen, sizeof body - blen,
+                "%s{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\",\"cod\":%u,\"age_ms\":%ld}",
+                i ? "," : "",
+                rows[i].mac[5], rows[i].mac[4], rows[i].mac[3],
+                rows[i].mac[2], rows[i].mac[1], rows[i].mac[0],
+                rows[i].cod, now - rows[i].last_seen_ms);
+        }
+        blen += snprintf(body + blen, sizeof body - blen, "]}");
+        res_len = snprintf(res, sizeof(res),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\nContent-Length: %d\r\n"
+            "Connection: close\r\n\r\n%s", blen, body);
+        write(cfd, res, (size_t)res_len);
+    }
+    else if (strncmp(req, "POST /api/bt/pair", 17) == 0) {
+        /* Pair a specific MAC: ?mac=AA:BB:CC:DD:EE:FF&seconds=120.
+         * Without ?mac, falls back to a wide scan window (backwards-
+         * compatible with the earlier UI). */
+        int seconds = 120;
+        unsigned char mac[6] = {0};
+        int have_mac = 0;
+        const char *p = strstr(req, "seconds=");
+        if (p) seconds = atoi(p + 8);
+        if (seconds <= 0 || seconds > 300) seconds = 120;
+        have_mac = parse_mac_param(req, mac);
+        int ok = have_mac ? bt_host_pair_mac(mac, seconds) : bt_host_scan(seconds);
+        const char *body = ok ? "{\"status\":\"pairing_started\"}" : "{\"status\":\"bt_init_failed\"}";
+        res_len = snprintf(res, sizeof(res),
+            "HTTP/1.1 %s\r\nContent-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\nContent-Length: %zu\r\n"
+            "Connection: close\r\n\r\n%s",
+            ok ? "200 OK" : "503 Service Unavailable", strlen(body), body);
+        write(cfd, res, (size_t)res_len);
+    }
+    else if (strncmp(req, "POST /api/bt/disable", 20) == 0) {
+        bt_host_cleanup();
+        const char *body = "{\"status\":\"bt_disabled\"}";
+        res_len = snprintf(res, sizeof(res),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            "Access-Control-Allow-Origin: *\r\nContent-Length: %zu\r\n"
+            "Connection: close\r\n\r\n%s", strlen(body), body);
+        write(cfd, res, (size_t)res_len);
+    }
+    else if (strncmp(req, "POST /api/bt/forget", 19) == 0) {
+        unsigned char mac[6];
+        if (!parse_mac_param(req, mac)) send_json(cfd, 400, "{\"error\":\"bad_mac\"}");
+        else { bt_host_forget(mac); send_json(cfd, 200, "{\"status\":\"forgotten\"}"); }
+    }
+    /* ---- Remembered pads + reconnect ---- */
+    else if (strncmp(req, "GET /api/bt/paired", 18) == 0) {
+        bt_paired_t rows[16];
+        int n = bt_host_paired(rows, 16);
+        char body[3072]; int blen = 0;
+        blen += snprintf(body + blen, sizeof body - (size_t)blen, "{\"radio\":%s,\"pads\":[", bt_host_is_up() ? "true" : "false");
+        for (int i = 0; i < n && blen < (int)sizeof body - 200; i++) {
+            blen += snprintf(body + blen, sizeof body - (size_t)blen,
+                "%s{\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\",\"vid\":%u,\"pid\":%u,\"le\":%d,\"connected\":%d,\"name\":\"%s\"}",
+                i ? "," : "", rows[i].mac[5], rows[i].mac[4], rows[i].mac[3], rows[i].mac[2], rows[i].mac[1], rows[i].mac[0],
+                rows[i].vid, rows[i].pid, rows[i].le, rows[i].connected, rows[i].name ? rows[i].name : "");
+        }
+        snprintf(body + blen, sizeof body - (size_t)blen, "]}");
+        send_json(cfd, 200, body);
+    }
+    else if (strncmp(req, "POST /api/bt/reconnect/cancel", 29) == 0) {
+        bt_host_reconnect_cancel();
+        send_json(cfd, 200, "{\"status\":\"cancelled\"}");
+    }
+    else if (strncmp(req, "POST /api/bt/reconnect", 22) == 0) {
+        unsigned char mac[6];
+        if (!parse_mac_param(req, mac)) { send_json(cfd, 400, "{\"error\":\"bad_mac\"}"); }
+        else {
+            int r = bt_host_reconnect(mac);
+            send_json(cfd, r == 1 ? 200 : r == 0 ? 404 : 500,
+                      r == 1 ? "{\"status\":\"started\"}" : r == 0 ? "{\"error\":\"not_paired\"}" : "{\"error\":\"bt_init_failed\"}");
+        }
+    }
+    else if (strncmp(req, "GET /api/bt/reconnect", 21) == 0) {
+        char body[256];
+        bt_host_reconnect_json(body, sizeof body);
+        send_json(cfd, 200, body);
+    }
+    /* ---- Mapping (per-controller button remap) endpoints ---- */
+    else if (strncmp(req, "GET /api/mapping/", 17) == 0) {
+        char path[256]; char id[24] = {0};
+        /* Pull VVVV_PPPP token after /api/mapping/ */
+        const char *p = req + 17;
+        size_t n_id = 0;
+        while (n_id + 1 < sizeof id && (isalnum((unsigned char)*p) || *p == '_')) id[n_id++] = *p++;
+        snprintf(path, sizeof path, BT_MAP_DIR "/%s.map", id);
+        FILE *f = fopen(path, "r");
+        if (f) {
+            /* Convert the .map file lines (key = value) into a JSON object. */
+            char body[1024]; int blen = 0;
+            blen += snprintf(body + blen, sizeof body - blen, "{");
+            char line[128]; int first = 1;
+            while (fgets(line, sizeof line, f) && blen < (int)sizeof body - 80) {
+                char *hash = strchr(line, '#'); if (hash) *hash = 0;
+                char *eq = strchr(line, '='); if (!eq) continue;
+                *eq = 0; char *k = line, *v = eq + 1;
+                while (*k == ' ' || *k == '\t') k++;
+                char *ke = k + strlen(k); while (ke > k && (ke[-1]==' '||ke[-1]=='\t'||ke[-1]=='\n'||ke[-1]=='\r')) *--ke = 0;
+                while (*v == ' ' || *v == '\t') v++;
+                char *ve = v + strlen(v); while (ve > v && (ve[-1]==' '||ve[-1]=='\t'||ve[-1]=='\n'||ve[-1]=='\r')) *--ve = 0;
+                if (!*k) continue;
+                blen += snprintf(body + blen, sizeof body - blen,
+                                 "%s\"%s\":\"%s\"", first ? "" : ",", k, v);
+                first = 0;
+            }
+            fclose(f);
+            blen += snprintf(body + blen, sizeof body - blen, "}");
+            res_len = snprintf(res, sizeof(res),
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                "Access-Control-Allow-Origin: *\r\nContent-Length: %d\r\n"
+                "Connection: close\r\n\r\n%s", blen, body);
+            write(cfd, res, (size_t)res_len);
+        } else {
+            const char *body = "{\"error\":\"not_found\"}";
+            res_len = snprintf(res, sizeof(res),
+                "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\n"
+                "Access-Control-Allow-Origin: *\r\nContent-Length: %zu\r\n"
+                "Connection: close\r\n\r\n%s", strlen(body), body);
+            write(cfd, res, (size_t)res_len);
+        }
+    }
+    else if (strncmp(req, "POST /api/mapping/", 18) == 0) {
+        /* Dashboard POSTs a flat JSON object; we persist it as key=value lines. */
+        char id[24] = {0};
+        const char *p = req + 18;
+        size_t n_id = 0;
+        while (n_id + 1 < sizeof id && (isalnum((unsigned char)*p) || *p == '_')) id[n_id++] = *p++;
+        char *body_start = strstr(req, "\r\n\r\n");
+        if (body_start) body_start += 4; else body_start = (char*)req + n;
+        mkdir("/data/omnipad", 0755);
+        mkdir("/data/omnipad/maps", 0755);
+        char path[256];
+        snprintf(path, sizeof path, BT_MAP_DIR "/%s.map", id);
+        FILE *f = fopen(path, "w");
+        if (!f) {
+            const char *body = "{\"error\":\"write_failed\"}";
+            res_len = snprintf(res, sizeof(res),
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n"
+                "Access-Control-Allow-Origin: *\r\nContent-Length: %zu\r\n"
+                "Connection: close\r\n\r\n%s", strlen(body), body);
+            write(cfd, res, (size_t)res_len);
+        } else {
+            fprintf(f, "# OmniPad: written by the mappings page.\n");
+            /* Shallow key:value extraction — assumes a flat object with string
+             * values, which is what the mappings page sends. */
+            char *cur = body_start;
+            while (cur && *cur) {
+                char *k = strchr(cur, '"'); if (!k) break;
+                char *k_end = strchr(k + 1, '"'); if (!k_end) break;
+                char *colon = strchr(k_end, ':'); if (!colon) break;
+                char *v = strchr(colon, '"'); if (!v) break;
+                char *v_end = strchr(v + 1, '"'); if (!v_end) break;
+                *k_end = 0; *v_end = 0;
+                fprintf(f, "%s = %s\n", k + 1, v + 1);
+                cur = v_end + 1;
+            }
+            fclose(f);
+            /* Connected pads pick the new settings up now, no reconnect. */
+            bt_host_reload_configs();
+            const char *body = "{\"status\":\"saved\"}";
+            res_len = snprintf(res, sizeof(res),
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                "Access-Control-Allow-Origin: *\r\nContent-Length: %zu\r\n"
+                "Connection: close\r\n\r\n%s", strlen(body), body);
+            write(cfd, res, (size_t)res_len);
+        }
+    }
+    else if (strncmp(req, "GET /img/", 9) == 0) {
+        if (!send_asset(cfd, req)) send_json(cfd, 404, "{\"error\":\"not_found\"}");
+    }
+    else {
+        /* "/" and "/mappings" (kept for old bookmarks; the page jumps to
+         * its Mappings section) both get the single dashboard page. */
+        send_page(cfd);
     }
     close(cfd);
 }
