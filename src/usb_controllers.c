@@ -117,30 +117,9 @@ int usb_init_controller_handshake(int fd, usb_controller_type_t type)
     struct usb_ctl_request req;
 
     if (type == CTRL_NINTENDO_SWITCH_PRO) {
-        /* Switch Pro handshake 1: 0x80 0x02 0x01 */
-        uint8_t hs1[] = { 0x80, 0x02 };
-        memset(&req, 0, sizeof(req));
-        req.ucr_request.bmRequestType = 0x21; /* Class, Interface */
-        req.ucr_request.bRequest = 0x09;      /* SET_REPORT */
-        USETW(req.ucr_request.wValue, 0x0101);
-        USETW(req.ucr_request.wLength, sizeof(hs1));
-        req.ucr_data = hs1;
-        ioctl(fd, USB_DO_REQUEST, &req);
-        usleep(20000);
-
-        /* Handshake 2: 0x80 0x04 */
-        uint8_t hs2[] = { 0x80, 0x04 };
-        USETW(req.ucr_request.wLength, sizeof(hs2));
-        req.ucr_data = hs2;
-        ioctl(fd, USB_DO_REQUEST, &req);
-        usleep(20000);
-
-        /* Handshake 3: Enable standard 60Hz full reporting (subcommand 0x03 0x30) */
-        uint8_t hs3[] = { 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x30 };
-        USETW(req.ucr_request.wLength, sizeof(hs3));
-        req.ucr_data = hs3;
-        ioctl(fd, USB_DO_REQUEST, &req);
-        log_line("usb_ctrl: Switch Pro handshake completed");
+        /* The reader owns the IN endpoint. It will perform the USB handshake
+         * sequentially, waiting for 0x81 acknowledgements from the controller.
+         * Sending from probe drops the replies and leads to disconnects. */
         return 0;
     }
     else if (type == CTRL_SONY_DS3) {
@@ -220,6 +199,28 @@ static void gamesir_parse_gamepad(const uint8_t *p, pad_state_t *st)
     if (st->r2 >= PAD_TRIGGER_DIGITAL_THRESHOLD) st->buttons |= PAD_BTN_R2;
 }
 
+/* Nintendo output report 0x80 (SET_REPORT type 2, ID 0x80).
+ * Issue #16: 0x0101 used by older implementations is an INPUT report. */
+int usb_nintendo_switch_send_cmd(int fd, uint8_t subcmd)
+{
+#ifdef __PROSPERO__
+    if (fd < 0) return -1;
+    struct usb_ctl_request req;
+    uint8_t frame[2] = { 0x80, subcmd };
+    memset(&req, 0, sizeof(req));
+    req.ucr_request.bmRequestType = 0x21;
+    req.ucr_request.bRequest = 0x09;
+    USETW(req.ucr_request.wValue, 0x0280);
+    USETW(req.ucr_request.wIndex, 0x0000);
+    USETW(req.ucr_request.wLength, sizeof(frame));
+    req.ucr_data = frame;
+    return ioctl(fd, USB_DO_REQUEST, &req);
+#else
+    (void)fd; (void)subcmd;
+    return -1;
+#endif
+}
+
 uint8_t axis16_to_u8(int16_t val, int invert_y)
 {
     if (val == 0) return 128;
@@ -262,46 +263,41 @@ int usb_parse_input_report(usb_controller_type_t type, const uint8_t *data, size
         return 1;
 
     case CTRL_NINTENDO_SWITCH_PRO: {
-        /* 64-byte or standard Switch Pro input report */
-        if (len < 12) return 0;
-        uint8_t b1 = data[3];
-        uint8_t b2 = data[4];
-        uint8_t b3 = data[5];
-
-        /* Face buttons */
-        if (b1 & 0x01) st->buttons |= PAD_BTN_CROSS;    /* Switch B -> Cross */
-        if (b1 & 0x02) st->buttons |= PAD_BTN_CIRCLE;   /* Switch A -> Circle */
-        if (b1 & 0x04) st->buttons |= PAD_BTN_SQUARE;   /* Switch Y -> Square */
-        if (b1 & 0x08) st->buttons |= PAD_BTN_TRIANGLE; /* Switch X -> Triangle */
-        if (b1 & 0x40) st->buttons |= PAD_BTN_L1;
-        if (b1 & 0x80) { st->buttons |= PAD_BTN_L2; st->l2 = 255; }
-
-        if (b2 & 0x01) st->buttons |= PAD_BTN_OPTIONS;  /* Plus -> Options */
-        if (b2 & 0x02) st->buttons |= PAD_BTN_SHARE;    /* Minus -> Share */
+        /* Reject 0x81 handshake replies and 0x21 subcommand responses.
+         * Those packets are NOT buttons; never generic-HID fallback them. */
+        if (len < 12 || data[0] != 0x30) return 0;
+        uint8_t b1 = data[3], b2 = data[4], b3 = data[5];
+        /* Nintendo order: Y X B A SR SL R ZR */
+        if (b1 & 0x01) st->buttons |= PAD_BTN_SQUARE;
+        if (b1 & 0x02) st->buttons |= PAD_BTN_TRIANGLE;
+        if (b1 & 0x04) st->buttons |= PAD_BTN_CROSS;
+        if (b1 & 0x08) st->buttons |= PAD_BTN_CIRCLE;
+        if (b1 & 0x40) st->buttons |= PAD_BTN_R1;
+        if (b1 & 0x80) { st->buttons |= PAD_BTN_R2; st->r2 = 255; }
+        /* Minus, Plus, R stick, L stick, Home, Capture */
+        if (b2 & 0x01) st->buttons |= PAD_BTN_SHARE;
+        if (b2 & 0x02) st->buttons |= PAD_BTN_OPTIONS;
         if (b2 & 0x04) st->buttons |= PAD_BTN_R3;
         if (b2 & 0x08) st->buttons |= PAD_BTN_L3;
-        if (b2 & 0x10) st->buttons |= PAD_BTN_PS;       /* Home -> PS */
-        if (b2 & 0x20) st->buttons |= PAD_BTN_TOUCHPAD; /* Capture -> Touchpad */
-        if (b2 & 0x40) st->buttons |= PAD_BTN_R1;
-        if (b2 & 0x80) { st->buttons |= PAD_BTN_R2; st->r2 = 255; }
-
-        /* D-Pad */
+        if (b2 & 0x10) st->buttons |= PAD_BTN_PS;
+        if (b2 & 0x20) st->buttons |= PAD_BTN_TOUCHPAD;
         if (b3 & 0x01) st->buttons |= PAD_DPAD_DOWN;
         if (b3 & 0x02) st->buttons |= PAD_DPAD_UP;
         if (b3 & 0x04) st->buttons |= PAD_DPAD_RIGHT;
         if (b3 & 0x08) st->buttons |= PAD_DPAD_LEFT;
-
-        /* Analog Sticks (12-bit packed in Switch Pro) */
-        uint16_t raw_lx = (uint16_t)(data[6] | ((data[7] & 0x0F) << 8));
-        uint16_t raw_ly = (uint16_t)((data[7] >> 4) | (data[8] << 4));
-        uint16_t raw_rx = (uint16_t)(data[9] | ((data[10] & 0x0F) << 8));
-        uint16_t raw_ry = (uint16_t)((data[10] >> 4) | (data[11] << 4));
-
-        uint8_t ly_u8 = (uint8_t)(raw_ly >> 4);
-        uint8_t ry_u8 = (uint8_t)(raw_ry >> 4);
-        st->lx = (uint8_t)(raw_lx >> 4);
+        if (b3 & 0x40) st->buttons |= PAD_BTN_L1;
+        if (b3 & 0x80) { st->buttons |= PAD_BTN_L2; st->l2 = 255; }
+        /* 12-bit packed sticks (centre 0x800). */
+        uint16_t lx = (uint16_t)(data[6] | ((uint16_t)(data[7] & 0x0f) << 8));
+        uint16_t ly = (uint16_t)((data[7] >> 4) | ((uint16_t)data[8] << 4));
+        uint16_t rx = (uint16_t)(data[9] | ((uint16_t)(data[10] & 0x0f) << 8));
+        uint16_t ry = (uint16_t)((data[10] >> 4) | ((uint16_t)data[11] << 4));
+        /* Preserve upstream b7682ef vertical conversion semantics. */
+        uint8_t ly_u8 = (uint8_t)(ly >> 4);
+        uint8_t ry_u8 = (uint8_t)(ry >> 4);
+        st->lx = (uint8_t)(lx >> 4);
         st->ly = (ly_u8 == 128) ? 128 : (uint8_t)(255 - ly_u8);
-        st->rx = (uint8_t)(raw_rx >> 4);
+        st->rx = (uint8_t)(rx >> 4);
         st->ry = (ry_u8 == 128) ? 128 : (uint8_t)(255 - ry_u8);
         return 1;
     }

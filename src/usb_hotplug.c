@@ -494,6 +494,16 @@ static void *usb_reader_worker(void *arg)
     const long hold_timeout_ms = dev->stale_timeout_ms;
     omni_ps_chord_hold_t ps_hold = {0};
 
+    /* Switch Pro (including 8BitDo Switch-emulation identity 057e:2009):
+     * read acknowledgements on the same endpoint used by the gamepad. */
+    #ifdef __PROSPERO__
+    static const uint8_t sw_commands[] = {0x01, 0x02, 0x03, 0x02, 0x04};
+    int sw_step = 0;
+    int sw_retries = 0;
+    long sw_sent_ms = 0;
+    const int is_switch = (dev->type == CTRL_NINTENDO_SWITCH_PRO);
+    #endif
+
     log_line("usb_hotplug: Reader thread started for slot %d (%s on %s)",
              dev->slot, dev->name, dev->dev_path);
 
@@ -532,6 +542,29 @@ static void *usb_reader_worker(void *arg)
 
     while (!dev->stop_thread) {
         long cur_time = now_ms();
+#ifdef __PROSPERO__
+        /* Send each Nintendo command from the reader thread, then wait for its
+         * 0x81 acknowledgement. A missing ACK triggers at most two resends.
+         * The last command (0x04 = USB HID without timeout) has no ACK. */
+        if (is_switch && sw_step < 5 &&
+            (sw_sent_ms == 0 || cur_time - sw_sent_ms >= 300)) {
+            if (sw_sent_ms != 0 && sw_retries >= 2) {
+                log_line("usb_hotplug: Switch handshake step %d no ACK, continuing", sw_step);
+                sw_step++;
+                sw_retries = 0;
+                sw_sent_ms = 0;
+            }
+            if (sw_step < 5) {
+                int ret = usb_nintendo_switch_send_cmd(dev->fd, sw_commands[sw_step]);
+                sw_sent_ms = cur_time ? cur_time : 1;
+                sw_retries++;
+                log_line("usb_hotplug: Switch handshake %d command %02x returned %d",
+                         sw_step, sw_commands[sw_step], ret);
+                if (sw_step == 4) sw_step = 5;
+            }
+        }
+#endif
+
 
 #ifdef __PROSPERO__
         /* Send periodic Player 1 LED / keepalive ONLY for genuine Microsoft Xbox 360 controller */
@@ -566,6 +599,16 @@ static void *usb_reader_worker(void *arg)
 
         if (n > 0) {
             consecutive_errors = 0;
+#ifdef __PROSPERO__
+            if (is_switch && n >= 2 && report[0] == 0x81 &&
+                sw_step < 4 && report[1] == sw_commands[sw_step]) {
+                sw_step++;
+                sw_retries = 0;
+                sw_sent_ms = 0;
+                continue; /* This is a command acknowledgement, not input. */
+            }
+#endif
+
             int parsed = 0;
 #ifdef __PROSPERO__
             if (is_xbox_one) {
@@ -575,7 +618,7 @@ static void *usb_reader_worker(void *arg)
                     else st.buttons &= ~PAD_BTN_PS;
                     parsed = 1;
                 } else {
-                    /* Non-input GIP system/battery/ack frame — ignore without resetting st */
+                    /* Non-input GIP system/battery/ack frame - ignore without resetting st */
                     usleep(250);
                     continue;
                 }
@@ -583,7 +626,8 @@ static void *usb_reader_worker(void *arg)
 #endif
             {
                 parsed = usb_parse_input_report(dev->type, report, (size_t)n, &st);
-                if (!parsed && dev->type != CTRL_GAMESIR_G7PRO && dev->type != CTRL_GAMESIR_G7SE) {
+                if (!parsed && dev->type != CTRL_GAMESIR_G7PRO && dev->type != CTRL_GAMESIR_G7SE &&
+                    dev->type != CTRL_NINTENDO_SWITCH_PRO) {
                     parsed = usb_parse_input_report(CTRL_GENERIC_HID, report, (size_t)n, &st);
                 }
             }
