@@ -31,13 +31,21 @@ Arreglos de build: Makefile añade `src/generic.c src/crc32.c` a los links con p
 - `test_vpad_retention.c` y `test_vpad_ps_level.c`: ahora asertan que un pad USB con timeout por defecto NO se limpia por silencia (política #18), contradiciendo la intención original de #19 (500 ms). Decisión de política pendiente del mantenedor.
 - No se probó nada en hardware ni compilación PS5 SDK (`__PROSPERO__` no se compila en host).
 
+## Sprint 3 (sin hardware) — hecho
+- Test Machenike reescrito con frame XInput real (0x00/0x14, A→CROSS, LT): vuelve a asertar parseo.
+- **#10 Mad Catz SF IV FightPad (0738:8828)**: nuevo `CTRL_MADCATZ_SF4_FIGHTPAD` (añadido al final del enum), parser de 27 bytes según la captura del reportero, sin fallback HID genérico, `tests/test_madcatz_fightpad.c` en el Makefile. Sin validar en hardware; diagonales del hat asumidas (no capturadas); bytes de presión (7-10) ignorados.
+- **#1 Pair Controller**: `web/index.html` tiene botón "Pair controller" (+ `/api/bt/pair`, `/api/bt/scan`) → resuelto por #18; cerrar tras verificar en consola.
+- **#15 Rumble XInput**: ya hay rumble GIP y XInput (`0x00 0x08 0x00 s w`) en `usb_send_rumble` (solo `__PROSPERO__`); no verificable en host → mantener abierto hasta prueba con GameSir Cyclone 2.
+- `ANYPAD_BUILD` 21→22 (la cadena de versión sigue 1.0.4: subirla es decisión de release). docs/COMPATIBILITY.md: filas G7 Pro/SE, Mad Catz, Switch.
+- `make test` rc=0 (7 suites nuevas/viejas pasan, 6 SKIP por fuentes ausentes).
+
 ## Pendiente (en orden)
-1. Compilar con PS5 SDK (los bloques `__PROSPERO__` de hotplug/#20 no se han compilado).
-2. Confirmar política de retención USB (#18 vs #19) y reescribir test Machenike.
-3. Issues fáciles (abajo) → un commit por issue.
-4. web.c usa `vpad_slot_info_t` pero NO expone `stale_timeout_ms`: no hay choque; decidir si mostrarlo en el dashboard.
-5. Bump `src/version.h` y actualizar docs/COMPATIBILITY.md.
-6. Subir la rama: este entorno no tiene credenciales; `git clone omnipad-integration.bundle -b integration`.
+1. Compilar con PS5 SDK (bloques `__PROSPERO__`: hotplug, #20, tick 250/4000 µs) y probar en consola.
+2. Decidir política de retención USB (#18 event-driven vs #19 500 ms); hoy gana #18 y los tests lo reflejan.
+3. Release: decidir versión (README/docs aún dicen 1.0.4 y "sin Bluetooth", desactualizado tras #18).
+4. Dashboard: exponer `stale_timeout_ms` (opcional; web.c no choca con #19).
+5. Subir rama/PRs: sin credenciales aquí; usar el bundle.
+6. Bloqueados por datos: #7 Stadia y #8 8BitDo Adapter v2 (el reporte solo dice "reconoce Xbox Series pero no hace nada": pedir lsusb/descriptor y captura de reportes), #14 Flydigi Vader 4 Pro (touchpad), #2,#3,#4,#5,#6,#11,#13.
 
 ## Issues candidatos (abiertos #1-#16; #9 y #17-21 son PRs)
 - #10 Mad Catz SF IV FightPad (VID 0738 / PID 8828): agregar VID/PID + perfil HID → FÁCIL
