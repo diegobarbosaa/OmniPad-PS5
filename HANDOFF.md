@@ -42,6 +42,8 @@ Arreglos de build: Makefile añade `src/generic.c src/crc32.c` a los links con p
 ## Pendiente (en orden)
 1. Compilar con PS5 SDK (bloques `__PROSPERO__`: hotplug, #20, tick 250/4000 µs) y probar en consola.
 2. Decidir política de retención USB (#18 event-driven vs #19 500 ms); hoy gana #18 y los tests lo reflejan.
+   - Evidencia de campo (comentario de jpemendonca en #19, FW 13.60, 8BitDo Ultimate 2C por dongle 2.4GHz 2dc8:3106): el dongle solo envía al cambiar; con el bucle 1.0.4 (timeout 15 ms, reinicio por llamada) se perdían toques y direcciones/gatillos sostenidos. Con un IN transfer armado sin timeout, re-armado tras USB_FS_COMPLETE, chequeo de complete.ep_index y sin auto-neutral de 500 ms en slots USB, dejó de perder entradas (DS4 054c:05c4 sigue OK). Respalda #17 y la política #18 (event-driven) sobre los 500 ms de #19. Ojo: probó su propia implementación, no esta rama.
+   - Verificado en código (host): `usb_fs_recv_packet` en usb_hotplug.c es genérico (timeout 0, in_armed, re-arma tras COMPLETE, valida ep_index), aplica también a XInput/HID, no solo a GIP. El dongle 2C es XInput (EP 0x81).
 3. Release: decidir versión (README/docs aún dicen 1.0.4 y "sin Bluetooth", desactualizado tras #18).
 4. Dashboard: exponer `stale_timeout_ms` (opcional; web.c no choca con #19).
 5. Subir rama/PRs: sin credenciales aquí; usar el bundle.
