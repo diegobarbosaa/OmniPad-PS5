@@ -574,6 +574,13 @@ static void finish_identification(long now)
     g_pending = -1;
     close_kernel_log();
 
+    if (g_matches == 0) {
+        /* klog did not contain expected device_id line (subType 22/0x16, DEVICE_ADDED).
+         * This can happen on firmware versions where the klog format changed.
+         * The virtual device was already added (popup appeared), so fall back to handle scanning. */
+        log_line("vpad: slot %d no klog device match — falling back to handle scan", slot);
+    }
+
     if (g_matches == 1) {
         s->device_id = g_match_dev;
     } else {
