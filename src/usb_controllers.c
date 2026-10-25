@@ -28,6 +28,12 @@ usb_controller_type_t usb_identify_controller(uint16_t vid, uint16_t pid, const 
         }
     }
 
+    /* Thrustmaster T598 direct-drive wheel (PC mode) */
+    if (vid == 0x044f && pid == 0xb696) {
+        if (name_out) *name_out = "Thrustmaster T598 Wheel";
+        return CTRL_THRUSTMASTER_T598;
+    }
+
     /* Sony DualShock 4 */
     if (vid == 0x054c) {
         if (pid == 0x05c4 || pid == 0x09cc || pid == 0x0ba0) {
@@ -380,6 +386,80 @@ int usb_parse_input_report(usb_controller_type_t type, const uint8_t *data, size
         st->ly = axis16_to_u8(sy, 1);
         st->rx = axis16_to_u8(rx, 0);
         st->ry = axis16_to_u8(ry, 1);
+        return 1;
+    }
+
+    case CTRL_THRUSTMASTER_T598: {
+        /* T598 PC-mode input report 0x07 (64 bytes incl. report ID), layout taken
+         * from the wheel's own HID descriptor and a live capture:
+         *   d[0..1]  steering, 16-bit LE, 0 = full left, 0xFFFF = full right
+         *   d[2..3]  brake,  10-bit, 1023 = released, 0 = fully pressed
+         *   d[4..5]  gas,    10-bit, same direction as brake
+         *   d[6..7]  clutch, 10-bit, same direction as brake
+         *   d[14..17] buttons 1-26 (bit field), d[18] low nibble = d-pad hat (8 = none)
+         * Other reports (0x02/0x03/0x14) are vendor/force-feedback data and are ignored. */
+        if (len < 20 || data[0] != 0x07) return 0;
+        const uint8_t *d = data + 1;
+
+        /* Steering -> left stick X, with optional sensitivity boost */
+        int steer = (int)(uint16_t)(d[0] | ((uint16_t)d[1] << 8)) - 32768;
+        steer = steer * T598_STEER_GAIN_PCT / 100;
+        if (steer < -32767) steer = -32767;
+        if (steer > 32767) steer = 32767;
+
+        /* Skip past the game's own stick deadzone */
+        int mag = steer < 0 ? -steer : steer;
+        if (mag <= T598_STEER_CENTER_DZ) {
+            steer = 0;
+        } else {
+            const int start = 32767 * T598_STEER_ANTIDEADZONE_PCT / 100;
+            mag = start + (mag - T598_STEER_CENTER_DZ) * (32767 - start) / (32767 - T598_STEER_CENTER_DZ);
+            steer = steer < 0 ? -mag : mag;
+        }
+        st->lx = (uint8_t)((steer + 32768) >> 8);
+
+        /* Pedals: invert (1023 = released) and scale 0..1023 -> 0..255 */
+        uint16_t brake = (uint16_t)(d[2] | ((uint16_t)d[3] << 8));
+        uint16_t gas   = (uint16_t)(d[4] | ((uint16_t)d[5] << 8));
+        if (brake > 1023) brake = 1023;
+        if (gas > 1023) gas = 1023;
+        uint8_t brake_u8 = (uint8_t)((1023 - brake) >> 2);
+        uint8_t gas_u8   = (uint8_t)((1023 - gas) >> 2);
+        if (brake_u8 < 4) brake_u8 = 0; /* small deadzone against pedal noise */
+        if (gas_u8 < 4) gas_u8 = 0;
+        st->l2 = brake_u8; /* brake pedal -> L2 */
+        st->r2 = gas_u8;   /* gas pedal   -> R2 */
+
+        uint8_t b0 = d[14], b1 = d[15], b2 = d[16];
+        if (b0 & 0x01) st->buttons |= PAD_BTN_L1;       /* left paddle  */
+        if (b0 & 0x02) st->buttons |= PAD_BTN_R1;       /* right paddle */
+        if (b0 & 0x04) st->buttons |= PAD_BTN_TRIANGLE;
+        if (b0 & 0x08) st->buttons |= PAD_BTN_SQUARE;
+        if (b0 & 0x10) st->buttons |= PAD_BTN_CIRCLE;
+        if (b0 & 0x20) st->buttons |= PAD_BTN_CROSS;
+        if (b0 & 0x40) st->buttons |= PAD_BTN_SHARE;
+        if (b0 & 0x80) st->buttons |= PAD_BTN_OPTIONS;
+
+        if (b1 & 0x01) st->r2 = 255;                    /* wheel R2 button = full gas  */
+        if (b1 & 0x02) st->l2 = 255;                    /* wheel L2 button = full brake */
+        /* b1 & 0x04 = "+" button, b1 & 0x20 = "S" button: not mapped */
+        if (b1 & 0x10) st->buttons |= PAD_BTN_PS;
+        if (b1 & 0x40) st->buttons |= PAD_BTN_TOUCHPAD; /* "P" button */
+
+        if (b2 & 0x20) st->buttons |= PAD_BTN_L3;
+        if (b2 & 0x40) st->buttons |= PAD_BTN_R3;
+
+        switch (d[18] & 0x0F) {
+        case 0: st->buttons |= PAD_DPAD_UP; break;
+        case 1: st->buttons |= PAD_DPAD_UP | PAD_DPAD_RIGHT; break;
+        case 2: st->buttons |= PAD_DPAD_RIGHT; break;
+        case 3: st->buttons |= PAD_DPAD_DOWN | PAD_DPAD_RIGHT; break;
+        case 4: st->buttons |= PAD_DPAD_DOWN; break;
+        case 5: st->buttons |= PAD_DPAD_DOWN | PAD_DPAD_LEFT; break;
+        case 6: st->buttons |= PAD_DPAD_LEFT; break;
+        case 7: st->buttons |= PAD_DPAD_UP | PAD_DPAD_LEFT; break;
+        default: break;
+        }
         return 1;
     }
 

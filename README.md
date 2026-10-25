@@ -109,6 +109,7 @@ graph TD
 | **Nintendo Switch Pro** | Physical USB-C Cable | 🟡 **Experimental (Spec-Implemented)** | 3-step USB activation handshake implemented. *(Direct BT in v1.1.0)*. |
 | **8BitDo Wireless USB Adapter (v1 / v2)** | USB 2.4G Dongle | 🟡 **Experimental (Spec-Implemented)** | Bridges wireless controllers into USB HID/XInput. |
 | **Generic PC USB Gamepads** | Standard USB Cable (HID / XInput) | 🟡 **Experimental (Spec-Implemented)** | Standard 10-byte HID normalization. |
+| **Thrustmaster T598 Wheel** | USB Cable, base in **PC mode** (`044f:b696`) | 🟢 **Verified on PS5 Hardware** | Wheel → left stick, gas → R2, brake → L2, paddles → L1/R1. Built-in steering deadzone compensation. Lets wheel-less games be played with the wheel. |
 
 ---
 

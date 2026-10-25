@@ -298,6 +298,77 @@ static void test_dongle_standby_isolation(void)
     printf("OK!\n");
 }
 
+/* Build a T598 report 0x07 from the first 19 data bytes of a real capture */
+static void t598_report(uint8_t *out, const uint8_t *d19)
+{
+    memset(out, 0, 64);
+    out[0] = 0x07;
+    memcpy(out + 1, d19, 19);
+}
+
+static void test_thrustmaster_t598(void)
+{
+    printf("Testing Thrustmaster T598 wheel (real captured reports)... ");
+    const char *name = NULL;
+    assert(usb_identify_controller(0x044f, 0xb696, &name) == CTRL_THRUSTMASTER_T598);
+    assert(name != NULL && strstr(name, "T598") != NULL);
+
+    static const uint8_t rest[19]   = {0x54,0x80,0xff,0x03,0xff,0x03,0xff,0x03,0,0,0x80,0x80,0x80,0x80,0,0,0,0,0x08};
+    static const uint8_t left[19]   = {0x00,0x00,0xff,0x03,0xff,0x03,0xff,0x03,0,0,0x80,0x80,0x80,0x80,0,0,0,0,0x08};
+    static const uint8_t right[19]  = {0xff,0xff,0xff,0x03,0xff,0x03,0xff,0x03,0,0,0x80,0x80,0x80,0x80,0,0,0,0,0x08};
+    static const uint8_t gas[19]    = {0x69,0xe6,0xff,0x03,0x00,0x00,0xff,0x03,0,0,0x80,0x80,0x80,0x80,0,0,0,0,0x08};
+    static const uint8_t brake[19]  = {0x69,0xe6,0x00,0x00,0xff,0x03,0xff,0x03,0,0,0x80,0x80,0x80,0x80,0,0,0,0,0x08};
+    static const uint8_t paddle[19] = {0x8a,0xe7,0xff,0x03,0xff,0x03,0xff,0x03,0,0,0x80,0x80,0x80,0x80,0x01,0,0,0,0x08};
+
+    uint8_t r[64];
+    pad_state_t st;
+
+    t598_report(r, rest);
+    assert(usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st) == 1);
+    assert(st.lx == 128 && st.ly == 128 && st.l2 == 0 && st.r2 == 0 && st.buttons == 0);
+
+    t598_report(r, left);
+    usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st);
+    assert(st.lx == 0);
+
+    t598_report(r, right);
+    usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st);
+    assert(st.lx == 255);
+
+    t598_report(r, gas);
+    usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st);
+    assert(st.r2 == 255 && st.l2 == 0);
+
+    t598_report(r, brake);
+    usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st);
+    assert(st.l2 == 255 && st.r2 == 0);
+
+    /* A small turn just past center must already move the stick past the game's deadzone */
+    t598_report(r, rest);
+    r[1] = 0x00; r[2] = 0x82; /* 0x8200 = 512 units right of center */
+    usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st);
+    assert(st.lx >= 128 + (128 * T598_STEER_ANTIDEADZONE_PCT / 100));
+    r[1] = 0x00; r[2] = 0x7e; /* 512 units left */
+    usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st);
+    assert(st.lx <= 128 - (128 * T598_STEER_ANTIDEADZONE_PCT / 100));
+
+    t598_report(r, paddle);
+    usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st);
+    assert(st.buttons == PAD_BTN_L1);
+
+    /* Buttons from the step-4 capture: cross = byte 14 bit 5, PS = byte 15 bit 4, R3 = byte 16 bit 6 */
+    t598_report(r, rest);
+    r[1 + 14] = 0x20; r[1 + 15] = 0x10; r[1 + 16] = 0x40; r[1 + 18] = 0x02; /* + d-pad right */
+    usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st);
+    assert(st.buttons == (PAD_BTN_CROSS | PAD_BTN_PS | PAD_BTN_R3 | PAD_DPAD_RIGHT));
+
+    /* Vendor / force-feedback reports must be ignored */
+    memset(r, 0x55, sizeof(r));
+    r[0] = 0x02;
+    assert(usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st) == 0);
+    printf("OK!\n");
+}
+
 int main(void)
 {
     printf("========================================\n");
@@ -316,6 +387,7 @@ int main(void)
     test_dongle_standby_isolation();
     test_ds3_usb_parsing();
     test_shadowmount_storage_isolation();
+    test_thrustmaster_t598();
 
     printf("\nAll parser tests passed successfully!\n");
     return 0;
