@@ -1,0 +1,40 @@
+name: Build
+
+on:
+  push:
+    branches: [main, wiiu-gc-adapter]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget
+
+      - name: Download PS5 Payload SDK
+        run: |
+          mkdir -p /opt/ps5-payload-sdk
+          wget -q -O /tmp/sdk.zip https://github.com/ps5-payload-dev/sdk/releases/latest/download/ps5-payload-sdk.zip
+          unzip -q /tmp/sdk.zip -d /opt/
+          ls /opt/ps5-payload-sdk/toolchain/
+
+      - name: Build OmniPad PS5
+        run: |
+          export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+          make
+          ls -la dist/
+
+      - name: Upload ELF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OmniPad-PS5-WiiUGCA
+          path: dist/OmniPad-PS5.elf

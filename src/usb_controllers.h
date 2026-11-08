@@ -16,7 +16,8 @@ typedef enum {
     CTRL_GAMESIR_G7PRO,
     CTRL_GAMESIR_G7SE,
     CTRL_MADCATZ_SF4_FIGHTPAD,
-    CTRL_THRUSTMASTER_T598
+    CTRL_THRUSTMASTER_T598,
+    CTRL_NINTENDO_WIIU_GC_ADAPTER
 } usb_controller_type_t;
 
 /* T598 steering sensitivity in percent. 100 = full wheel lock gives full stick.
