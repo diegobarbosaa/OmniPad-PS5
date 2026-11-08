@@ -75,3 +75,9 @@ Abierto: tick del worker. #17 usa 250 µs para todo USB_FS; `integration` lo lim
 - **#20 / Ultimate 2 Wireless:** dongle en modo Switch Pro (057E:2009; se activa manteniendo Y + Home al encender). Funcionó en build personal FW 10.20; modos XInput/DInput sin entrada útil. Identidad 057E:2009 compartida con otros Switch Pro, por eso no hay atajo PS (Home→PS ya está en el parser). 4 suites host + compilación PS5 SDK en Docker según el autor (nosotros no compilamos PS5). Sin test físico de la rama extraída ni de un Switch Pro genuino.
 - **#18 / Ultimate 2 Wireless por BT (2DC8:6012):** perfil DInput con paletas/botones extra; mapeo a DualSense/Edge vía /data/omnipad/maps/VVVV_PPPP.map y dashboard (/mappings, /api/mapping). VID/PID del Edge no encontrado: mapeo manual como parche. El autor no marca claramente qué casillas de su lista de pruebas se hicieron; tratar BT como NO validado hasta probar en consola. Stack tomado de fork AnyPad (codeberg bearts/Any-Pad-ps5). El autor dice que no hay presión por mergear.
 - Ultimate 2 Wireless aparece en dos rutas distintas: BT (#18, 2dc8:6012) y dongle Switch (#20, 057e:2009). Distinto de la Ultimate 2C (#21, 2dc8:3106).
+
+## Sprint 4 — release v1.1.0 (rama `release/v1.1.0`, fork eIBart0/OmniPad-PS5)
+- Mergeados #23 (T598) y #22 (Wii U GC). Enum de #22 movido al final. Parser de #22 reescrito al protocolo real (Dolphin: OUT 0x13, reportes 0x21 de 37 bytes); sin hardware.
+- Bugs del comentario de BluntEXE en #17: (1) `usb_fs_send_packet` ya no se come la finalización del IN (`in_done_pending`); (2) GIP detectado por descriptor de interfaz FF/47/D0, no solo VID 045e.
+- Versión 1.1.0 build 24. CHANGELOG.md. CI en `.github/workflows/build.yml` (tests host + payload vía Dockerfile, SDK v0.43).
+- Pendiente: probar en consola GIP de terceros, adaptador GC y BT (#18).

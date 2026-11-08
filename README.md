@@ -6,6 +6,10 @@
 [![Language](https://img.shields.io/badge/Language-C99%20%2F%20POSIX-f59e0b?style=for-the-badge&logo=c&logoColor=white)](src/)
 [![License](https://img.shields.io/badge/License-GPL%20v3.0-blue?style=for-the-badge)](LICENSE)
 
+> ### 🧪 Community build v1.1.0 (pre-release)
+> This fork packages the open community pull requests that were waiting for review upstream ([diegobarbosaa/OmniPad-PS5](https://github.com/diegobarbosaa/OmniPad-PS5)) into one tested-on-host build. All credit for each feature goes to its PR author; see [CHANGELOG.md](CHANGELOG.md) for what is included and what has (and has not) been verified on a console.
+> The v1.0.4 notes further down this README are kept from upstream. In particular, the Bluetooth stack from PR #18 is **included but not yet validated on a console** — treat it as experimental.
+
 > ### ⚖️ Legal Disclaimer & Fair Use Notice
 > This is an independent open-source research project developed strictly for **educational, accessibility, and hardware interoperability purposes** (allowing third-party controllers and adaptive peripherals to function on the console).
 > 
@@ -147,7 +151,7 @@ To avoid any confusion or unmet expectations, please note the exact state of Xbo
 ### Step 1: Load the Payload
 Send `OmniPad-PS5.elf` to your console using your preferred ELF loader or payload sender.
 
-*(A system notification will appear on the top right of your screen: `OmniPad PS5 v1.0.4 Ativo! Painel: porta 8095`)*
+*(A system notification will appear on the top right of your screen: `OmniPad PS5 v1.1.0-b24 Active! Web UI: port 8095`)*
 
 ---
 

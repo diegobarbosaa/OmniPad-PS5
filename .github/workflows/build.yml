@@ -2,39 +2,34 @@ name: Build
 
 on:
   push:
-    branches: [main, wiiu-gc-adapter]
+    branches: [main, 'release/**']
+    tags: ['v*']
   pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04
+  host-tests:
+    runs-on: ubuntu-24.04
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - uses: actions/checkout@v4
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang make
+      - name: Run host test suites
+        run: make test
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget
-
-      - name: Download PS5 Payload SDK
-        run: |
-          mkdir -p /opt/ps5-payload-sdk
-          wget -q -O /tmp/sdk.zip https://github.com/ps5-payload-dev/sdk/releases/latest/download/ps5-payload-sdk.zip
-          unzip -q /tmp/sdk.zip -d /opt/
-          ls /opt/ps5-payload-sdk/toolchain/
-
-      - name: Build OmniPad PS5
-        run: |
-          export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
-          make
-          ls -la dist/
-
-      - name: Upload ELF artifact
+  ps5-payload:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build toolchain image (PS5 Payload SDK v0.43, see Dockerfile)
+        run: docker build -t omnipad-build .
+      - name: Build payload
+        run: docker run --rm -v "$PWD:/work" omnipad-build make ps5
+      - name: List output
+        run: ls -la dist/
+      - name: Upload ELF
         uses: actions/upload-artifact@v4
         with:
-          name: OmniPad-PS5-WiiUGCA
-          path: dist/OmniPad-PS5.elf
+          name: OmniPad-PS5-elf
+          path: dist/OmniPad-PS5-*-b*.elf
+          if-no-files-found: error
