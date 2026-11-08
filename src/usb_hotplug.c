@@ -51,6 +51,8 @@ typedef struct {
     uint8_t               in_index;
     uint8_t               out_index;
     uint8_t               in_armed;
+    uint8_t               in_done_pending; /* IN completion consumed by a send; data is in rx_buf */
+    uint8_t               is_gip;          /* Xbox One/Series protocol, from the interface descriptor */
     int                   has_out;
     int                   use_fs;
     void                 *fs_frame[4];
@@ -107,10 +109,19 @@ static uint32_t s_last_seen[6][21] = {{0}};
 
 #ifdef __PROSPERO__
 
-static void find_usb_endpoints(int fd, usb_controller_type_t type, uint16_t vid, uint16_t pid, uint8_t *in_addr, uint8_t *out_addr)
+/* GIP (Xbox One / Series) interfaces are vendor class 0xFF, subclass 0x47, protocol 0xD0.
+ * Matching on this instead of the Microsoft VID also covers licensed pads
+ * (PDP, Turtle Beach, PowerA, ...). */
+static int is_gip_interface(const uint8_t *d)
+{
+    return d[5] == 0xff && d[6] == 0x47 && d[7] == 0xd0;
+}
+
+static void find_usb_endpoints(int fd, usb_controller_type_t type, uint16_t vid, uint16_t pid, uint8_t *in_addr, uint8_t *out_addr, uint8_t *is_gip)
 {
     *in_addr = 0;
     *out_addr = 0;
+    *is_gip = (type == CTRL_XBOX_XINPUT && vid == 0x045e && pid != 0x028e);
     struct usb_gen_descriptor desc;
     uint8_t raw[512];
     memset(&desc, 0, sizeof(desc));
@@ -124,31 +135,44 @@ static void find_usb_endpoints(int fd, usb_controller_type_t type, uint16_t vid,
     uint8_t ins[8], outs[8];
     int in_cnt = 0, out_cnt = 0;
     int offset = 0;
+    int in_gip_iface = 0, gip_seen = 0;
+    uint8_t gip_in = 0, gip_out = 0;
     while (offset + 2 <= len) {
         int entry = raw[offset];
         if (entry < 2 || offset + entry > len) break;
         uint8_t bDescriptorType = raw[offset + 1];
+        if (bDescriptorType == 0x04 && entry >= 9) { /* Interface descriptor */
+            in_gip_iface = !gip_seen && raw[offset + 3] == 0 && is_gip_interface(raw + offset);
+            if (in_gip_iface) gip_seen = 1;
+        }
         if (bDescriptorType == 0x05 && entry >= 5) { /* Endpoint descriptor */
             uint8_t ep_addr = raw[offset + 2];
             uint8_t ep_attr = raw[offset + 3] & 0x03;
             if (ep_attr == 0x03 || ep_attr == 0x02) { /* Interrupt or Bulk */
                 if ((ep_addr & 0x80) && in_cnt < 8) ins[in_cnt++] = ep_addr;
                 else if (!(ep_addr & 0x80) && out_cnt < 8) outs[out_cnt++] = ep_addr;
+                if (in_gip_iface) {
+                    if ((ep_addr & 0x80) && !gip_in) gip_in = ep_addr;
+                    else if (!(ep_addr & 0x80) && !gip_out) gip_out = ep_addr;
+                }
             }
         }
         offset += entry;
     }
 
-    int is_xbox_one = (type == CTRL_XBOX_XINPUT && vid == 0x045e && pid != 0x028e);
+    if (gip_seen) *is_gip = 1;
 
-    if (is_xbox_one) {
-        /* Only Xbox One / Series X|S (GIP) uses EP 0x82 IN and 0x02 OUT */
+    if (*is_gip) {
+        /* Microsoft Xbox One / Series X|S use EP 0x82 IN and 0x02 OUT; other GIP pads
+         * use whatever their GIP interface declares. */
         for (int i = 0; i < in_cnt; i++) {
             if (ins[i] == 0x82) { *in_addr = 0x82; break; }
         }
         for (int i = 0; i < out_cnt; i++) {
             if (outs[i] == 0x02) { *out_addr = 0x02; break; }
         }
+        if (*in_addr == 0) *in_addr = gip_in;
+        if (*out_addr == 0) *out_addr = gip_out;
     } else {
         /* Xbox 360, Machenike G5 Pro, ShanWan, Switch, DS4, DS3 all use EP 0x81 IN */
         for (int i = 0; i < in_cnt; i++) {
@@ -180,13 +204,16 @@ static int usb_fs_setup_device(usb_slot_device_t *sdev)
     }
 
     uint8_t in_addr = 0, out_addr = 0;
-    find_usb_endpoints(sdev->fd, sdev->type, sdev->vid, sdev->pid, &in_addr, &out_addr);
+    find_usb_endpoints(sdev->fd, sdev->type, sdev->vid, sdev->pid, &in_addr, &out_addr, &sdev->is_gip);
+    sdev->in_done_pending = 0;
 
-    int is_xbox_one = (sdev->type == CTRL_XBOX_XINPUT && sdev->vid == 0x045e && sdev->pid != 0x028e);
+    int is_xbox_one = sdev->is_gip;
+    if (is_xbox_one && !(sdev->type == CTRL_XBOX_XINPUT && sdev->vid == 0x045e))
+        log_line("usb_hotplug: %s has a GIP interface, using the Xbox One protocol", sdev->name);
     if (in_addr == 0) {
         in_addr = is_xbox_one ? 0x82 : 0x81;
     }
-    if (out_addr == 0 && (sdev->type == CTRL_XBOX_XINPUT)) {
+    if (out_addr == 0 && (sdev->type == CTRL_XBOX_XINPUT || is_xbox_one)) {
         out_addr = is_xbox_one ? 0x02 : 0x01;
     }
 
@@ -269,6 +296,19 @@ static int usb_fs_recv_packet(usb_slot_device_t *dev, uint8_t *buffer, uint32_t 
     if (!dev->use_fs) return -1;
     struct usb_fs_endpoint *ep = &dev->endpoints[dev->in_index];
 
+    if (dev->in_done_pending) {
+        /* usb_fs_send_packet() picked up our IN completion while waiting for its own. */
+        dev->in_done_pending = 0;
+        dev->in_armed = 0;
+        if (ep->status == USB_ERR_NORMAL_COMPLETION || ep->status == USB_ERR_SHORT_XFER) {
+            uint32_t n = dev->fs_len[dev->in_index];
+            if (n > length) n = length;
+            memcpy(buffer, dev->rx_buf, n);
+            return (int)n;
+        }
+        return 0;
+    }
+
     if (!dev->in_armed) {
         uint32_t ask_len = length > 64 ? 64 : length;
         dev->fs_len[dev->in_index] = ask_len;
@@ -345,6 +385,13 @@ static int usb_fs_send_packet(usb_slot_device_t *dev, const uint8_t *buffer, uin
         memset(&complete, 0, sizeof(complete));
         complete.ep_index = dev->out_index;
         if (ioctl(dev->fd, USB_FS_COMPLETE, &complete) == 0) {
+            if (complete.ep_index != dev->out_index) {
+                /* The armed IN transfer finished first. Keep it for the next
+                 * usb_fs_recv_packet() instead of dropping the input report. */
+                if (complete.ep_index == dev->in_index && dev->in_armed) dev->in_done_pending = 1;
+                spins++;
+                continue;
+            }
             return (ep->status == USB_ERR_NORMAL_COMPLETION || ep->status == USB_ERR_SHORT_XFER) ? (int)send_len : -1;
         }
         if (errno != EBUSY) return -1;
@@ -508,7 +555,7 @@ static void *usb_reader_worker(void *arg)
              dev->slot, dev->name, dev->dev_path);
 
 #ifdef __PROSPERO__
-    int is_xbox_one = (dev->type == CTRL_XBOX_XINPUT && dev->vid == 0x045e && dev->pid != 0x028e);
+    int is_xbox_one = dev->is_gip;
     int is_genuine_x360 = (dev->type == CTRL_XBOX_XINPUT && dev->vid == 0x045e && dev->pid == 0x028e);
     if (dev->use_fs && dev->has_out && is_xbox_one) {
         uint8_t seq = 0;
@@ -529,6 +576,12 @@ static void *usb_reader_worker(void *arg)
         uint8_t auth_done[] = {0x06, 0x20, seq++, 0x02, 0x01, 0x00};
         usb_fs_send_packet(dev, auth_done, sizeof(auth_done), 80);
         log_line("usb_hotplug: GIP power/init/led/auth sent on slot %d (pid 0x%04x)", dev->slot, dev->pid);
+    }
+    if (dev->use_fs && dev->has_out && dev->type == CTRL_NINTENDO_WIIU_GC_ADAPTER) {
+        /* The Wii U GameCube adapter stays silent until the host writes 0x13 on OUT. */
+        static const uint8_t gc_start[] = {0x13};
+        int r = usb_fs_send_packet(dev, gc_start, sizeof(gc_start), 80);
+        log_line("usb_hotplug: Wii U GC adapter start (0x13) sent on slot %d -> %d", dev->slot, r);
     }
     if (dev->use_fs && dev->has_out && dev->type == CTRL_XBOX_XINPUT && !is_xbox_one) {
         /* XInput hosts set the player LED on the interrupt OUT endpoint right after
@@ -629,7 +682,8 @@ static void *usb_reader_worker(void *arg)
                 if (!parsed && dev->type != CTRL_GAMESIR_G7PRO && dev->type != CTRL_GAMESIR_G7SE &&
                     dev->type != CTRL_NINTENDO_SWITCH_PRO &&
                     dev->type != CTRL_MADCATZ_SF4_FIGHTPAD &&
-                    dev->type != CTRL_THRUSTMASTER_T598) {
+                    dev->type != CTRL_THRUSTMASTER_T598 &&
+                    dev->type != CTRL_NINTENDO_WIIU_GC_ADAPTER) {
                     parsed = usb_parse_input_report(CTRL_GENERIC_HID, report, (size_t)n, &st);
                 }
             }
