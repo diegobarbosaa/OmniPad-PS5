@@ -112,6 +112,7 @@ graph TD
 | **8BitDo Wireless USB Adapter (v1 / v2)** | USB 2.4G Dongle | 🟡 **Experimental (Spec-Implemented)** | Bridges wireless controllers into USB HID/XInput. |
 | **8BitDo Ultimate 2C Wireless** | Bundled 2.4GHz USB Dongle or USB-C Cable (`2dc8:3106`) | 🟢 **Verified on PS5 Hardware (community)** | Tested on FW 13.60. Starts reporting only after the XInput player-LED command on its interrupt OUT endpoint. |
 | **Generic PC USB Gamepads** | Standard USB Cable (HID / XInput) | 🟡 **Experimental (Spec-Implemented)** | Standard 10-byte HID normalization. |
+| **Thrustmaster T598 Wheel** | USB Cable, base in **PC mode** (`044f:b696`) | 🟢 **Verified on PS5 Hardware** | Wheel → left stick, gas → R2, brake → L2, paddles → L1/R1. Built-in steering deadzone compensation. Lets wheel-less games be played with the wheel. |
 
 ---
 

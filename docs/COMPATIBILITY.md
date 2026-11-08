@@ -40,6 +40,43 @@ All peripherals in this table connect directly to any USB-A or USB-C port on the
 | **Nintendo Switch Pro / Switch-emulation dongles** | USB (`057e:2009`) | 🟡 **Experimental** | Full `0x30` report parser + bounded USB init/ACK handling (PR #20). An 8BitDo Ultimate 2 Wireless worked in this mode on the PR author's console (limited testing). |
 | **Logitech Gamepads (F310, F710)** | USB Cable / 2.4G Receiver | 🟡 **Experimental (Spec-Implemented)** | Operates in either XInput or standard HID mode. |
 | **Generic PC USB Gamepads** | Standard USB Cable | 🟡 **Experimental (Spec-Implemented)** | 10-byte standard HID descriptor normalization. |
+| **Thrustmaster T598 Wheel** | USB Cable, base in PC mode (`044f:b696`) | 🟢 **Verified on PS5 Hardware** | Emulated as a DualSense so games without wheel support can be driven with it. See section below. |
+
+### 🏎️ Thrustmaster T598 (wheel as a controller)
+
+Lets the T598 drive games that have no native wheel support. The layout was taken from the wheel's own HID descriptor and a live capture (input report `0x07`, 64 bytes).
+
+**Tested games (real T598 on PS5):**
+
+| Game | Platform | Result | Setup |
+|---|---|---|---|
+| *Star Wars: Galactic Racer* | PS5 native | ✅ Works | None |
+| *Need for Speed: Underground 2* | PS2 via PS5SX2 emulator | ✅ Works | Remap buttons in PS5SX2 (see below) |
+
+**NFS Underground 2 in PS5SX2:** the game accelerates with Cross and brakes with Square, so remap the controls in PS5SX2's controller settings to match the wheel:
+
+| PS2 game button | Set to | On the T598 |
+|---|---|---|
+| Cross (accelerate) | R2 | Gas pedal |
+| Square (brake) | L2 | Brake pedal |
+| L2 (gear shift) | L1 | Left paddle |
+| R2 (gear shift) | R1 | Right paddle |
+
+| T598 control | DualSense input |
+|---|---|
+| Steering (16-bit) | Left stick X |
+| Gas pedal (10-bit) | R2 (analog) |
+| Brake pedal (10-bit) | L2 (analog) |
+| Left / right paddle | L1 / R1 |
+| L2 / R2 wheel buttons | Full L2 / full R2 |
+| Triangle, Square, Cross, Circle, D-pad, Share, Options, PS, L3, R3 | Same buttons |
+| P button | Touchpad click |
+| Clutch, +, −, S | Not mapped |
+
+- **Use PC mode.** In PS mode the console drives the wheel natively with a different protocol.
+- **Steering deadzone compensation:** games ignore small stick movements near center, so as soon as the wheel leaves center the stick jumps to 40% (`T598_STEER_ANTIDEADZONE_PCT`). A small center zone (`T598_STEER_CENTER_DZ`, 96/65536) avoids jitter. Optional `T598_STEER_GAIN_PCT` makes steering more sensitive. All three are compile-time settings in `src/usb_controllers.h`.
+- **No force feedback** is sent; the game believes it is talking to a gamepad.
+- Vendor reports (`0x02`, `0x03`, `0x14`) are ignored instead of falling back to the generic HID parser.
 
 ---
 

@@ -628,7 +628,8 @@ static void *usb_reader_worker(void *arg)
                 parsed = usb_parse_input_report(dev->type, report, (size_t)n, &st);
                 if (!parsed && dev->type != CTRL_GAMESIR_G7PRO && dev->type != CTRL_GAMESIR_G7SE &&
                     dev->type != CTRL_NINTENDO_SWITCH_PRO &&
-                    dev->type != CTRL_MADCATZ_SF4_FIGHTPAD) {
+                    dev->type != CTRL_MADCATZ_SF4_FIGHTPAD &&
+                    dev->type != CTRL_THRUSTMASTER_T598) {
                     parsed = usb_parse_input_report(CTRL_GENERIC_HID, report, (size_t)n, &st);
                 }
             }
