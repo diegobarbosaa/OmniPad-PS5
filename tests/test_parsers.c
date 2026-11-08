@@ -399,8 +399,7 @@ static void test_wiiu_gc_adapter(void)
     /* Anything that is not a 0x21 report is rejected (no generic HID fallback) */
     r[0] = 0x02;
     assert(usb_parse_input_report(CTRL_NINTENDO_WIIU_GC_ADAPTER, r, sizeof(r), &st) == 0);
-    printf("PASSED
-");
+    printf("PASSED\n");
 }
 
 int main(void)
