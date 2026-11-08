@@ -365,6 +365,44 @@ static void test_thrustmaster_t598(void)
     printf("OK!\n");
 }
 
+static void test_wiiu_gc_adapter(void)
+{
+    printf("Testing Wii U GameCube adapter (Dolphin report layout)... ");
+    assert(usb_identify_controller(0x057e, 0x0337, NULL) == CTRL_NINTENDO_WIIU_GC_ADAPTER);
+
+    uint8_t r[37];
+    pad_state_t st;
+    memset(r, 0, sizeof(r));
+    r[0] = 0x21;
+
+    /* Port 1 empty: parsed, but neutral */
+    assert(usb_parse_input_report(CTRL_NINTENDO_WIIU_GC_ADAPTER, r, sizeof(r), &st) == 1);
+    assert(st.buttons == 0 && st.lx == 128 && st.ly == 128);
+
+    /* Wired pad on port 1: A + D-pad up + Start + Z, stick full up-right, L clicked, R half */
+    r[1] = 0x10;
+    r[2] = 0x01 | 0x80;
+    r[3] = 0x01 | 0x02 | 0x08;
+    r[4] = 255; r[5] = 255;   /* main stick right / up */
+    r[6] = 128; r[7] = 0;     /* C-stick down */
+    r[8] = 40;  r[9] = 128;
+    assert(usb_parse_input_report(CTRL_NINTENDO_WIIU_GC_ADAPTER, r, sizeof(r), &st) == 1);
+    assert(st.buttons & PAD_BTN_CROSS);
+    assert(st.buttons & PAD_DPAD_UP);
+    assert(st.buttons & PAD_BTN_OPTIONS);
+    assert(st.buttons & PAD_BTN_R1);
+    assert(st.lx == 255 && st.ly == 0);
+    assert(st.rx == 128 && st.ry == 255);
+    assert(st.l2 == 255 && (st.buttons & PAD_BTN_L2));
+    assert(st.r2 == 128 && (st.buttons & PAD_BTN_R2));
+
+    /* Anything that is not a 0x21 report is rejected (no generic HID fallback) */
+    r[0] = 0x02;
+    assert(usb_parse_input_report(CTRL_NINTENDO_WIIU_GC_ADAPTER, r, sizeof(r), &st) == 0);
+    printf("PASSED
+");
+}
+
 int main(void)
 {
     printf("========================================\n");
@@ -384,6 +422,7 @@ int main(void)
     test_ds3_usb_parsing();
     test_shadowmount_storage_isolation();
     test_thrustmaster_t598();
+    test_wiiu_gc_adapter();
 
     printf("\nAll parser tests passed successfully!\n");
     return 0;

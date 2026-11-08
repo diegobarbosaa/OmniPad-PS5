@@ -154,33 +154,6 @@ int usb_init_controller_handshake(int fd, usb_controller_type_t type)
         log_line("usb_ctrl: DualShock 3 magic initialization sent");
         return 0;
     }
-    else if (type == CTRL_NINTENDO_WIIU_GC_ADAPTER) {
-        /* Wii U GameCube Adapter handshake: GET_REPORT to trigger first report.
-         * The adapter does not auto-transmit on the interrupt endpoint until
-         * the host issues a GET_REPORT control transfer (0x81, 0x01).
-         * After this, the adapter sends 8-byte reports on every interrupt poll. */
-        memset(&req, 0, sizeof(req));
-        req.ucr_request.bmRequestType = 0x81; /* Device to Host, Standard, Interface */
-        req.ucr_request.bRequest = 0x01;      /* GET_REPORT */
-        USETW(req.ucr_request.wValue, 0x0300); /* Report Type 3 (Input), Report ID 0 */
-        USETW(req.ucr_request.wIndex, 0x0000); /* Interface 0 */
-        USETW(req.ucr_request.wLength, 0x0008); /* 8-byte input report */
-        req.ucr_data = dummy;
-        int r = ioctl(fd, USB_DO_REQUEST, &req);
-        usleep(20000);
-
-        /* Second poll: attempt to receive the triggered report */
-        memset(&req, 0, sizeof(req));
-        req.ucr_request.bmRequestType = 0x81;
-        req.ucr_request.bRequest = 0x01;
-        USETW(req.ucr_request.wValue, 0x0300);
-        USETW(req.ucr_request.wIndex, 0x0000);
-        USETW(req.ucr_request.wLength, 0x0008);
-        req.ucr_data = dummy;
-        int r2 = ioctl(fd, USB_DO_REQUEST, &req);
-        log_line("usb_ctrl: Wii U GC adapter GET_REPORT handshake (r1=%d, r2=%d)", r, r2);
-        return 0;
-    }
     else if (type == CTRL_XBOX_XINPUT) {
         /* Handshake 1: ShanWan / Machenike / Clone wake-up control transfer.
          * Many third-party 2.4G dongles (045e:028e clones) boot into dormant mode
@@ -378,79 +351,40 @@ int usb_parse_input_report(usb_controller_type_t type, const uint8_t *data, size
     }
 
     case CTRL_NINTENDO_WIIU_GC_ADAPTER: {
-        /* 8-byte report (official Wii U GameCube Controller Adapter, 057e:0337)
-         * Layout (per Dolphin / Nintendont):
-         *   Byte 0: Report ID (0x02)
-         *   Byte 1: Buttons - A=bit0, B=bit1, Z=bit2, Select=bit3
-         *   Byte 2: D-Pad high-nibble (Up=bit4, Right=bit5, Down=bit6, Left=bit7)
-         *   Byte 3: L=bit0, R=bit1, R-Analog=bit2, L-Analog=bit3, Power=bit4
-         *   Byte 4: Main Stick X  (8-bit, ~0-100 range)
-         *   Byte 5: Main Stick Y
-         *   Byte 6: C-Stick X    (8-bit)
-         *   Byte 7: C-Stick Y
-         *
-         *  PS5 button mapping:
-         *   GC A -> Cross, GC B -> Circle, GC X -> Square, GC Y -> Triangle
-         *   GC L -> L1, GC R -> R1, GC Z -> L2 (digital)
-         *   GC main stick -> left stick, GC C-stick -> right stick
-         *   L/R analog triggers -> L2/R2 analog (when > threshold)
-         */
-        if (len < 8) return 0;
+        /* Official Wii U GameCube adapter (057e:0337), protocol as used by Dolphin:
+         * after the host writes 0x13 to interrupt OUT, the adapter sends 37-byte
+         * reports: byte 0 = 0x21, then 9 bytes per port. Only port 1 is mapped.
+         *   +0 status (bits 4-5: 0x10 wired, 0x20 WaveBird; 0 = no controller)
+         *   +1 A=01 B=02 X=04 Y=08 Left=10 Right=20 Down=40 Up=80
+         *   +2 Start=01 Z=02 R=04 L=08
+         *   +3/+4 main stick X/Y, +5/+6 C-stick X/Y (0-255, Y up = higher)
+         *   +7/+8 L/R analog triggers */
+        if (len < 10 || data[0] != 0x21) return 0;
+        const uint8_t *p = data + 1;
+        if ((p[0] & 0x30) == 0) return 1; /* port empty: stay neutral */
 
-        /* Face buttons + Z + Select (byte 1) */
-        uint8_t btn1 = data[1];
-        if (btn1 & 0x01) st->buttons |= PAD_BTN_CROSS;       /* A -> Cross */
-        if (btn1 & 0x02) st->buttons |= PAD_BTN_CIRCLE;      /* B -> Circle */
-        if (btn1 & 0x04) st->buttons |= PAD_BTN_SQUARE;      /* X -> Square */
-        if (btn1 & 0x08) st->buttons |= PAD_BTN_TRIANGLE;    /* Y -> Triangle */
-        /* Bit 4-7 reserved on standard GC adapter */
+        uint8_t b1 = p[1], b2 = p[2];
+        if (b1 & 0x01) st->buttons |= PAD_BTN_CROSS;    /* A */
+        if (b1 & 0x02) st->buttons |= PAD_BTN_CIRCLE;   /* B */
+        if (b1 & 0x04) st->buttons |= PAD_BTN_SQUARE;   /* X */
+        if (b1 & 0x08) st->buttons |= PAD_BTN_TRIANGLE; /* Y */
+        if (b1 & 0x10) st->buttons |= PAD_DPAD_LEFT;
+        if (b1 & 0x20) st->buttons |= PAD_DPAD_RIGHT;
+        if (b1 & 0x40) st->buttons |= PAD_DPAD_DOWN;
+        if (b1 & 0x80) st->buttons |= PAD_DPAD_UP;
+        if (b2 & 0x01) st->buttons |= PAD_BTN_OPTIONS;  /* Start */
+        if (b2 & 0x02) st->buttons |= PAD_BTN_R1;       /* Z */
 
-        /* D-Pad (byte 2, upper nibble) */
-        uint8_t dpad_byte = data[2];
-        switch (dpad_byte & 0xF0) {
-        case 0x10: st->buttons |= PAD_DPAD_UP;     break;
-        case 0x20: st->buttons |= PAD_DPAD_RIGHT;  break;
-        case 0x40: st->buttons |= PAD_DPAD_DOWN;   break;
-        case 0x80: st->buttons |= PAD_DPAD_LEFT;   break;
-        case 0x30: st->buttons |= PAD_DPAD_UP | PAD_DPAD_RIGHT;   break;
-        case 0x60: st->buttons |= PAD_DPAD_DOWN | PAD_DPAD_RIGHT; break;
-        case 0x50: st->buttons |= PAD_DPAD_DOWN | PAD_DPAD_LEFT;  break;
-        case 0x90: st->buttons |= PAD_DPAD_UP | PAD_DPAD_LEFT;    break;
-        default: break;
-        }
+        st->lx = p[3];
+        st->ly = (uint8_t)(255 - p[4]);
+        st->rx = p[5];
+        st->ry = (uint8_t)(255 - p[6]);
 
-        /* L, R, Z, analog triggers, Power (byte 3) */
-        uint8_t btn3 = data[3];
-        uint8_t l_analog = btn3 & 0x01;    /* L-trigger analog (standard: 1-bit) */
-        uint8_t r_analog = (btn3 >> 1) & 0x01;  /* R-trigger analog */
-        uint8_t z_digital = (btn3 >> 2) & 0x01;    /* Z-trigger digital */
-        uint8_t r_digital = (btn3 >> 3) & 0x01;    /* R shoulder digital */
-        uint8_t l_digital = (btn3 >> 4) & 0x01;    /* L shoulder digital */
-        /* Bit 5 = Power (no PS5 mapping) */
-
-        if (l_digital) st->buttons |= PAD_BTN_L1;
-        if (r_digital) st->buttons |= PAD_BTN_R1;
-
-        /* Z-trigger (byte 3, bit 2) -> L2 digital + analog */
-        /* L-trigger analog (byte 3, bit 0) -> L2 analog */
-        if (z_digital || l_analog) {
-            st->buttons |= PAD_BTN_L2;
-            st->l2 = (l_analog || z_digital) ? 255 : 0;
-        }
-        /* R-trigger analog (byte 3, bit 1) -> R2 analog */
-        if (r_analog) {
-            st->buttons |= PAD_BTN_R2;
-            st->r2 = 255;
-        }
-
-        /* Main stick X/Y (bytes 4-5) */
-        st->lx = (uint8_t)(data[4] * 255 / 100);
-        st->ly = (uint8_t)(data[5] * 255 / 100);
-
-        /* C-Stick X/Y (bytes 6-7) -> right stick, Y inverted (GC C-stick coord system) */
-        st->rx = (uint8_t)(data[6] * 255 / 100);
-        st->ry = 255 - (uint8_t)(data[7] * 255 / 100);
-
+        /* Full press (digital click) wins; otherwise pass the analog value. */
+        st->l2 = (b2 & 0x08) ? 255 : p[7];
+        st->r2 = (b2 & 0x04) ? 255 : p[8];
+        if (st->l2 > 30) st->buttons |= PAD_BTN_L2;
+        if (st->r2 > 30) st->buttons |= PAD_BTN_R2;
         return 1;
     }
 
