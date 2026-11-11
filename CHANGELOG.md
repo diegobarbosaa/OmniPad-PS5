@@ -34,7 +34,7 @@ stuck inputs. The earlier integration build (b23, PRs #17 to #21) passed the sam
 
 ### Controllers
 - **8BitDo Ultimate 2C (`2dc8:3106`)**: XInput player LED sent on the OUT endpoint — PR #21 (jpemendonca). *Console-tested* on FW 13.60. Generic XInput pads still work (*console-tested*).
-- **GameSir G7 Pro / G7 SE**: HID parser, per-slot retention, View+Menu → PS shortcut — PR #19 (SacaSoh). *Author-tested* on FW 10.20. Known issue: intermittent D-pad over the G7 Pro dongle.
+- **GameSir G7 Pro / G7 SE**: HID parser, per-slot retention, View+Menu → PS shortcut — PR #19 (SacaSoh). *Author-tested* on FW 10.20. The G7 Pro dongle D-pad, intermittent before, works with this build (SacaSoh, PS5 Pro, FW 10.20, *console-tested*). The View+Menu shortcut is enabled only for the G7 Pro HID identity (`3537:1022`).
 - **Nintendo Switch Pro / Switch-mode dongles**: full `0x30` report parser and USB init — PR #20 (SacaSoh). An 8BitDo Ultimate 2 in Switch mode worked on the author's console. An official Switch Pro works on FW 10.60 (*console-tested*).
 - **Thrustmaster T598 wheel (`044f:b696`)** as a DualSense — PR #23 (igorgump). *Console-tested*.
 - **Mad Catz SF IV FightPad (`0738:8828`)**: parser built from the capture in issue #10. *Host-tested.*
