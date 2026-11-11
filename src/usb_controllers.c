@@ -2,6 +2,7 @@
 #include "pad_types.h"
 #include "log.h"
 #include "util.h"
+#include "input_watchdog.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -26,6 +27,17 @@ usb_controller_type_t usb_identify_controller(uint16_t vid, uint16_t pid, const 
             if (name_out) *name_out = "Nintendo NSO Controller (USB)";
             return CTRL_NINTENDO_SWITCH_PRO;
         }
+        /* Official Wii U GameCube Controller Adapter */
+        if (pid == 0x0337) {
+            if (name_out) *name_out = "Nintendo Wii U GC Adapter (USB)";
+            return CTRL_NINTENDO_WIIU_GC_ADAPTER;
+        }
+    }
+
+    /* Thrustmaster T598 direct-drive wheel (PC mode) */
+    if (vid == 0x044f && pid == 0xb696) {
+        if (name_out) *name_out = "Thrustmaster T598 Wheel";
+        return CTRL_THRUSTMASTER_T598;
     }
 
     /* Sony DualShock 4 */
@@ -54,6 +66,17 @@ usb_controller_type_t usb_identify_controller(uint16_t vid, uint16_t pid, const 
         }
     }
 
+    /* HID identities/layouts reported by Essyekky32 (Essy), issue #16.
+     * Other GameSir IDs retain the pre-existing generic classification. */
+    if (vid == 0x3537 && (pid == 0x1022 || pid == 0x1082)) {
+        if (pid == 0x1022) {
+            if (name_out) *name_out = "GameSir G7 Pro (USB HID)";
+            return CTRL_GAMESIR_G7PRO;
+        }
+        if (name_out) *name_out = "GameSir G7 SE (USB HID)";
+        return CTRL_GAMESIR_G7SE;
+    }
+
     /* Machenike, ShanWan & Thunderobot native VIDs (Wired USB-C, Dongle & PC modes) */
     if (vid == 0x2345 || vid == 0x2563 || vid == 0x2f24 || vid == 0x20bc || vid == 0x3537 || vid == 0x0e8f) {
         if (name_out) *name_out = "MACHENIKE G5 Pro / ShanWan Pad";
@@ -78,6 +101,13 @@ usb_controller_type_t usb_identify_controller(uint16_t vid, uint16_t pid, const 
         }
     }
 
+    /* Mad Catz Street Fighter IV Wireless FightPad (PS3 RF pad), issue #10.
+     * 27-byte HID reports; layout captured by the reporter on Windows. */
+    if (vid == 0x0738 && pid == 0x8828) {
+        if (name_out) *name_out = "Mad Catz SF IV FightPad (USB HID)";
+        return CTRL_MADCATZ_SF4_FIGHTPAD;
+    }
+
     /* Generic PC/HID Gamepad known VIDs (DragonRise, Betop, Retro-Bit, Mayflash, etc.) */
     if (vid == 0x0079 || vid == 0x0810 || vid == 0x11ff || vid == 0x12bd ||
         vid == 0x20d6 || vid == 0x24c6 || vid == 0x146b || vid == 0x0738 ||
@@ -91,6 +121,11 @@ usb_controller_type_t usb_identify_controller(uint16_t vid, uint16_t pid, const 
     return CTRL_UNKNOWN;
 }
 
+long usb_controller_stale_timeout_ms(usb_controller_type_t type)
+{
+    return type == CTRL_GAMESIR_G7PRO ? OMNI_EVENT_STALE_TIMEOUT_MS : OMNI_DEFAULT_STALE_TIMEOUT_MS;
+}
+
 int usb_init_controller_handshake(int fd, usb_controller_type_t type)
 {
     (void)type;
@@ -98,32 +133,12 @@ int usb_init_controller_handshake(int fd, usb_controller_type_t type)
 
 #ifdef __PROSPERO__
     struct usb_ctl_request req;
+    uint8_t dummy[32];
 
     if (type == CTRL_NINTENDO_SWITCH_PRO) {
-        /* Switch Pro handshake 1: 0x80 0x02 0x01 */
-        uint8_t hs1[] = { 0x80, 0x02 };
-        memset(&req, 0, sizeof(req));
-        req.ucr_request.bmRequestType = 0x21; /* Class, Interface */
-        req.ucr_request.bRequest = 0x09;      /* SET_REPORT */
-        USETW(req.ucr_request.wValue, 0x0101);
-        USETW(req.ucr_request.wLength, sizeof(hs1));
-        req.ucr_data = hs1;
-        ioctl(fd, USB_DO_REQUEST, &req);
-        usleep(20000);
-
-        /* Handshake 2: 0x80 0x04 */
-        uint8_t hs2[] = { 0x80, 0x04 };
-        USETW(req.ucr_request.wLength, sizeof(hs2));
-        req.ucr_data = hs2;
-        ioctl(fd, USB_DO_REQUEST, &req);
-        usleep(20000);
-
-        /* Handshake 3: Enable standard 60Hz full reporting (subcommand 0x03 0x30) */
-        uint8_t hs3[] = { 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x30 };
-        USETW(req.ucr_request.wLength, sizeof(hs3));
-        req.ucr_data = hs3;
-        ioctl(fd, USB_DO_REQUEST, &req);
-        log_line("usb_ctrl: Switch Pro handshake completed");
+        /* The reader owns the IN endpoint. It will perform the USB handshake
+         * sequentially, waiting for 0x81 acknowledgements from the controller.
+         * Sending from probe drops the replies and leads to disconnects. */
         return 0;
     }
     else if (type == CTRL_SONY_DS3) {
@@ -143,7 +158,6 @@ int usb_init_controller_handshake(int fd, usb_controller_type_t type)
         /* Handshake 1: ShanWan / Machenike / Clone wake-up control transfer.
          * Many third-party 2.4G dongles (045e:028e clones) boot into dormant mode
          * and will not emit input until this control transfer is dispatched. */
-        uint8_t dummy[32];
         memset(&req, 0, sizeof(req));
         req.ucr_request.bmRequestType = 0xc1; /* Device to host, vendor, interface */
         req.ucr_request.bRequest = 0x01;
@@ -171,6 +185,60 @@ int usb_init_controller_handshake(int fd, usb_controller_type_t type)
     return 0;
 }
 
+static void gamesir_parse_gamepad(const uint8_t *p, pad_state_t *st)
+{
+    uint8_t b0 = p[0], b1 = p[1];
+    if (b0 & 0x01) st->buttons |= PAD_BTN_CROSS;
+    if (b0 & 0x02) st->buttons |= PAD_BTN_CIRCLE;
+    if (b0 & 0x08) st->buttons |= PAD_BTN_SQUARE;
+    if (b0 & 0x10) st->buttons |= PAD_BTN_TRIANGLE;
+    if (b0 & 0x40) st->buttons |= PAD_BTN_L1;
+    if (b0 & 0x80) st->buttons |= PAD_BTN_R1;
+    if (b1 & 0x01) st->buttons |= PAD_BTN_L2;
+    if (b1 & 0x02) st->buttons |= PAD_BTN_R2;
+    if (b1 & 0x04) st->buttons |= PAD_BTN_SHARE;
+    if (b1 & 0x08) st->buttons |= PAD_BTN_OPTIONS;
+    if (b1 & 0x20) st->buttons |= PAD_BTN_L3;
+    if (b1 & 0x40) st->buttons |= PAD_BTN_R3;
+    switch (p[2] & 0x0f) {
+    case 0: st->buttons |= PAD_DPAD_UP; break;
+    case 1: st->buttons |= PAD_DPAD_UP | PAD_DPAD_RIGHT; break;
+    case 2: st->buttons |= PAD_DPAD_RIGHT; break;
+    case 3: st->buttons |= PAD_DPAD_DOWN | PAD_DPAD_RIGHT; break;
+    case 4: st->buttons |= PAD_DPAD_DOWN; break;
+    case 5: st->buttons |= PAD_DPAD_DOWN | PAD_DPAD_LEFT; break;
+    case 6: st->buttons |= PAD_DPAD_LEFT; break;
+    case 7: st->buttons |= PAD_DPAD_UP | PAD_DPAD_LEFT; break;
+    default: break;
+    }
+    st->lx = p[3]; st->ly = p[4]; st->rx = p[5]; st->ry = p[6];
+    st->l2 = p[7]; st->r2 = p[8];
+    if (st->l2 >= PAD_TRIGGER_DIGITAL_THRESHOLD) st->buttons |= PAD_BTN_L2;
+    if (st->r2 >= PAD_TRIGGER_DIGITAL_THRESHOLD) st->buttons |= PAD_BTN_R2;
+}
+
+/* Nintendo output report 0x80 (SET_REPORT type 2, ID 0x80).
+ * Issue #16: 0x0101 used by older implementations is an INPUT report. */
+int usb_nintendo_switch_send_cmd(int fd, uint8_t subcmd)
+{
+#ifdef __PROSPERO__
+    if (fd < 0) return -1;
+    struct usb_ctl_request req;
+    uint8_t frame[2] = { 0x80, subcmd };
+    memset(&req, 0, sizeof(req));
+    req.ucr_request.bmRequestType = 0x21;
+    req.ucr_request.bRequest = 0x09;
+    USETW(req.ucr_request.wValue, 0x0280);
+    USETW(req.ucr_request.wIndex, 0x0000);
+    USETW(req.ucr_request.wLength, sizeof(frame));
+    req.ucr_data = frame;
+    return ioctl(fd, USB_DO_REQUEST, &req);
+#else
+    (void)fd; (void)subcmd;
+    return -1;
+#endif
+}
+
 uint8_t axis16_to_u8(int16_t val, int invert_y)
 {
     if (val == 0) return 128;
@@ -180,54 +248,143 @@ uint8_t axis16_to_u8(int16_t val, int invert_y)
     return (uint8_t)(invert_y ? (255 - v) : v);
 }
 
+int usb_parse_gip_report(const uint8_t *data, size_t len, pad_state_t *st, int *guide_down)
+{
+    if (!data || len < 4) return 0;
+    if (data[0] == 0x20) {
+        if (len < 18 || !st) return 0;
+        if (!usb_parse_input_report(CTRL_XBOX_XINPUT, data, len, st)) return 0;
+        st->buttons &= ~PAD_BTN_PS;
+        return 1;
+    }
+    if (data[0] == 0x07) {
+        if (len < 5 || !guide_down) return 0;
+        *guide_down = (data[4] & 0x03) ? 1 : 0;
+        return 2;
+    }
+    return 0;
+}
+
 int usb_parse_input_report(usb_controller_type_t type, const uint8_t *data, size_t len, pad_state_t *st)
 {
     if (!data || len == 0 || !st) return 0;
     pad_state_neutral(st);
 
     switch (type) {
+    case CTRL_GAMESIR_G7PRO:
+        if (len < 9) return 0;
+        gamesir_parse_gamepad(data, st);
+        return 1;
+    case CTRL_GAMESIR_G7SE:
+        if (len < 10 || data[0] != 0x05) return 0;
+        gamesir_parse_gamepad(data + 1, st);
+        return 1;
+
+    case CTRL_MADCATZ_SF4_FIGHTPAD: {
+        if (len < 3) return 0;
+        uint8_t f = data[0], sy = data[1];
+        if (f & 0x01) st->buttons |= PAD_BTN_SQUARE;
+        if (f & 0x02) st->buttons |= PAD_BTN_CROSS;
+        if (f & 0x04) st->buttons |= PAD_BTN_CIRCLE;
+        if (f & 0x08) st->buttons |= PAD_BTN_TRIANGLE;
+        if (f & 0x10) st->buttons |= PAD_BTN_L1;
+        if (f & 0x20) st->buttons |= PAD_BTN_R1;
+        if (f & 0x40) { st->buttons |= PAD_BTN_L2; st->l2 = 255; }
+        if (f & 0x80) { st->buttons |= PAD_BTN_R2; st->r2 = 255; }
+        if (sy & 0x01) st->buttons |= PAD_BTN_SHARE;
+        if (sy & 0x02) st->buttons |= PAD_BTN_OPTIONS;
+        if (sy & 0x10) st->buttons |= PAD_BTN_PS;
+        /* Standard 8-way hat: neutral 0x0F; captured cardinals 0/2/4/6.
+         * Diagonals (1/3/5/7) are NOT captured yet: assumed standard hat order. */
+        switch (data[2] & 0x0f) {
+        case 0: st->buttons |= PAD_DPAD_UP; break;
+        case 1: st->buttons |= PAD_DPAD_UP | PAD_DPAD_RIGHT; break;
+        case 2: st->buttons |= PAD_DPAD_RIGHT; break;
+        case 3: st->buttons |= PAD_DPAD_DOWN | PAD_DPAD_RIGHT; break;
+        case 4: st->buttons |= PAD_DPAD_DOWN; break;
+        case 5: st->buttons |= PAD_DPAD_DOWN | PAD_DPAD_LEFT; break;
+        case 6: st->buttons |= PAD_DPAD_LEFT; break;
+        case 7: st->buttons |= PAD_DPAD_UP | PAD_DPAD_LEFT; break;
+        default: break;
+        }
+        return 1;
+    }
+
     case CTRL_NINTENDO_SWITCH_PRO: {
-        /* 64-byte or standard Switch Pro input report */
-        if (len < 12) return 0;
-        uint8_t b1 = data[3];
-        uint8_t b2 = data[4];
-        uint8_t b3 = data[5];
-
-        /* Face buttons */
-        if (b1 & 0x01) st->buttons |= PAD_BTN_CROSS;    /* Switch B -> Cross */
-        if (b1 & 0x02) st->buttons |= PAD_BTN_CIRCLE;   /* Switch A -> Circle */
-        if (b1 & 0x04) st->buttons |= PAD_BTN_SQUARE;   /* Switch Y -> Square */
-        if (b1 & 0x08) st->buttons |= PAD_BTN_TRIANGLE; /* Switch X -> Triangle */
-        if (b1 & 0x40) st->buttons |= PAD_BTN_L1;
-        if (b1 & 0x80) { st->buttons |= PAD_BTN_L2; st->l2 = 255; }
-
-        if (b2 & 0x01) st->buttons |= PAD_BTN_OPTIONS;  /* Plus -> Options */
-        if (b2 & 0x02) st->buttons |= PAD_BTN_SHARE;    /* Minus -> Share */
+        /* Reject 0x81 handshake replies and 0x21 subcommand responses.
+         * Those packets are NOT buttons; never generic-HID fallback them. */
+        if (len < 12 || data[0] != 0x30) return 0;
+        uint8_t b1 = data[3], b2 = data[4], b3 = data[5];
+        /* Nintendo order: Y X B A SR SL R ZR */
+        if (b1 & 0x01) st->buttons |= PAD_BTN_SQUARE;
+        if (b1 & 0x02) st->buttons |= PAD_BTN_TRIANGLE;
+        if (b1 & 0x04) st->buttons |= PAD_BTN_CROSS;
+        if (b1 & 0x08) st->buttons |= PAD_BTN_CIRCLE;
+        if (b1 & 0x40) st->buttons |= PAD_BTN_R1;
+        if (b1 & 0x80) { st->buttons |= PAD_BTN_R2; st->r2 = 255; }
+        /* Minus, Plus, R stick, L stick, Home, Capture */
+        if (b2 & 0x01) st->buttons |= PAD_BTN_SHARE;
+        if (b2 & 0x02) st->buttons |= PAD_BTN_OPTIONS;
         if (b2 & 0x04) st->buttons |= PAD_BTN_R3;
         if (b2 & 0x08) st->buttons |= PAD_BTN_L3;
-        if (b2 & 0x10) st->buttons |= PAD_BTN_PS;       /* Home -> PS */
-        if (b2 & 0x20) st->buttons |= PAD_BTN_TOUCHPAD; /* Capture -> Touchpad */
-        if (b2 & 0x40) st->buttons |= PAD_BTN_R1;
-        if (b2 & 0x80) { st->buttons |= PAD_BTN_R2; st->r2 = 255; }
-
-        /* D-Pad */
+        if (b2 & 0x10) st->buttons |= PAD_BTN_PS;
+        if (b2 & 0x20) st->buttons |= PAD_BTN_TOUCHPAD;
         if (b3 & 0x01) st->buttons |= PAD_DPAD_DOWN;
         if (b3 & 0x02) st->buttons |= PAD_DPAD_UP;
         if (b3 & 0x04) st->buttons |= PAD_DPAD_RIGHT;
         if (b3 & 0x08) st->buttons |= PAD_DPAD_LEFT;
-
-        /* Analog Sticks (12-bit packed in Switch Pro) */
-        uint16_t raw_lx = (uint16_t)(data[6] | ((data[7] & 0x0F) << 8));
-        uint16_t raw_ly = (uint16_t)((data[7] >> 4) | (data[8] << 4));
-        uint16_t raw_rx = (uint16_t)(data[9] | ((data[10] & 0x0F) << 8));
-        uint16_t raw_ry = (uint16_t)((data[10] >> 4) | (data[11] << 4));
-
-        uint8_t ly_u8 = (uint8_t)(raw_ly >> 4);
-        uint8_t ry_u8 = (uint8_t)(raw_ry >> 4);
-        st->lx = (uint8_t)(raw_lx >> 4);
+        if (b3 & 0x40) st->buttons |= PAD_BTN_L1;
+        if (b3 & 0x80) { st->buttons |= PAD_BTN_L2; st->l2 = 255; }
+        /* 12-bit packed sticks (centre 0x800). */
+        uint16_t lx = (uint16_t)(data[6] | ((uint16_t)(data[7] & 0x0f) << 8));
+        uint16_t ly = (uint16_t)((data[7] >> 4) | ((uint16_t)data[8] << 4));
+        uint16_t rx = (uint16_t)(data[9] | ((uint16_t)(data[10] & 0x0f) << 8));
+        uint16_t ry = (uint16_t)((data[10] >> 4) | ((uint16_t)data[11] << 4));
+        /* Preserve upstream b7682ef vertical conversion semantics. */
+        uint8_t ly_u8 = (uint8_t)(ly >> 4);
+        uint8_t ry_u8 = (uint8_t)(ry >> 4);
+        st->lx = (uint8_t)(lx >> 4);
         st->ly = (ly_u8 == 128) ? 128 : (uint8_t)(255 - ly_u8);
-        st->rx = (uint8_t)(raw_rx >> 4);
+        st->rx = (uint8_t)(rx >> 4);
         st->ry = (ry_u8 == 128) ? 128 : (uint8_t)(255 - ry_u8);
+        return 1;
+    }
+
+    case CTRL_NINTENDO_WIIU_GC_ADAPTER: {
+        /* Official Wii U GameCube adapter (057e:0337), protocol as used by Dolphin:
+         * after the host writes 0x13 to interrupt OUT, the adapter sends 37-byte
+         * reports: byte 0 = 0x21, then 9 bytes per port. Only port 1 is mapped.
+         *   +0 status (bits 4-5: 0x10 wired, 0x20 WaveBird; 0 = no controller)
+         *   +1 A=01 B=02 X=04 Y=08 Left=10 Right=20 Down=40 Up=80
+         *   +2 Start=01 Z=02 R=04 L=08
+         *   +3/+4 main stick X/Y, +5/+6 C-stick X/Y (0-255, Y up = higher)
+         *   +7/+8 L/R analog triggers */
+        if (len < 10 || data[0] != 0x21) return 0;
+        const uint8_t *p = data + 1;
+        if ((p[0] & 0x30) == 0) return 1; /* port empty: stay neutral */
+
+        uint8_t b1 = p[1], b2 = p[2];
+        if (b1 & 0x01) st->buttons |= PAD_BTN_CROSS;    /* A */
+        if (b1 & 0x02) st->buttons |= PAD_BTN_CIRCLE;   /* B */
+        if (b1 & 0x04) st->buttons |= PAD_BTN_SQUARE;   /* X */
+        if (b1 & 0x08) st->buttons |= PAD_BTN_TRIANGLE; /* Y */
+        if (b1 & 0x10) st->buttons |= PAD_DPAD_LEFT;
+        if (b1 & 0x20) st->buttons |= PAD_DPAD_RIGHT;
+        if (b1 & 0x40) st->buttons |= PAD_DPAD_DOWN;
+        if (b1 & 0x80) st->buttons |= PAD_DPAD_UP;
+        if (b2 & 0x01) st->buttons |= PAD_BTN_OPTIONS;  /* Start */
+        if (b2 & 0x02) st->buttons |= PAD_BTN_R1;       /* Z */
+
+        st->lx = p[3];
+        st->ly = (uint8_t)(255 - p[4]);
+        st->rx = p[5];
+        st->ry = (uint8_t)(255 - p[6]);
+
+        /* Full press (digital click) wins; otherwise pass the analog value. */
+        st->l2 = (b2 & 0x08) ? 255 : p[7];
+        st->r2 = (b2 & 0x04) ? 255 : p[8];
+        if (st->l2 > 30) st->buttons |= PAD_BTN_L2;
+        if (st->r2 > 30) st->buttons |= PAD_BTN_R2;
         return 1;
     }
 
@@ -380,6 +537,80 @@ int usb_parse_input_report(usb_controller_type_t type, const uint8_t *data, size
         st->ly = axis16_to_u8(sy, 1);
         st->rx = axis16_to_u8(rx, 0);
         st->ry = axis16_to_u8(ry, 1);
+        return 1;
+    }
+
+    case CTRL_THRUSTMASTER_T598: {
+        /* T598 PC-mode input report 0x07 (64 bytes incl. report ID), layout taken
+         * from the wheel's own HID descriptor and a live capture:
+         *   d[0..1]  steering, 16-bit LE, 0 = full left, 0xFFFF = full right
+         *   d[2..3]  brake,  10-bit, 1023 = released, 0 = fully pressed
+         *   d[4..5]  gas,    10-bit, same direction as brake
+         *   d[6..7]  clutch, 10-bit, same direction as brake
+         *   d[14..17] buttons 1-26 (bit field), d[18] low nibble = d-pad hat (8 = none)
+         * Other reports (0x02/0x03/0x14) are vendor/force-feedback data and are ignored. */
+        if (len < 20 || data[0] != 0x07) return 0;
+        const uint8_t *d = data + 1;
+
+        /* Steering -> left stick X, with optional sensitivity boost */
+        int steer = (int)(uint16_t)(d[0] | ((uint16_t)d[1] << 8)) - 32768;
+        steer = steer * T598_STEER_GAIN_PCT / 100;
+        if (steer < -32767) steer = -32767;
+        if (steer > 32767) steer = 32767;
+
+        /* Skip past the game's own stick deadzone */
+        int mag = steer < 0 ? -steer : steer;
+        if (mag <= T598_STEER_CENTER_DZ) {
+            steer = 0;
+        } else {
+            const int start = 32767 * T598_STEER_ANTIDEADZONE_PCT / 100;
+            mag = start + (mag - T598_STEER_CENTER_DZ) * (32767 - start) / (32767 - T598_STEER_CENTER_DZ);
+            steer = steer < 0 ? -mag : mag;
+        }
+        st->lx = (uint8_t)((steer + 32768) >> 8);
+
+        /* Pedals: invert (1023 = released) and scale 0..1023 -> 0..255 */
+        uint16_t brake = (uint16_t)(d[2] | ((uint16_t)d[3] << 8));
+        uint16_t gas   = (uint16_t)(d[4] | ((uint16_t)d[5] << 8));
+        if (brake > 1023) brake = 1023;
+        if (gas > 1023) gas = 1023;
+        uint8_t brake_u8 = (uint8_t)((1023 - brake) >> 2);
+        uint8_t gas_u8   = (uint8_t)((1023 - gas) >> 2);
+        if (brake_u8 < 4) brake_u8 = 0; /* small deadzone against pedal noise */
+        if (gas_u8 < 4) gas_u8 = 0;
+        st->l2 = brake_u8; /* brake pedal -> L2 */
+        st->r2 = gas_u8;   /* gas pedal   -> R2 */
+
+        uint8_t b0 = d[14], b1 = d[15], b2 = d[16];
+        if (b0 & 0x01) st->buttons |= PAD_BTN_L1;       /* left paddle  */
+        if (b0 & 0x02) st->buttons |= PAD_BTN_R1;       /* right paddle */
+        if (b0 & 0x04) st->buttons |= PAD_BTN_TRIANGLE;
+        if (b0 & 0x08) st->buttons |= PAD_BTN_SQUARE;
+        if (b0 & 0x10) st->buttons |= PAD_BTN_CIRCLE;
+        if (b0 & 0x20) st->buttons |= PAD_BTN_CROSS;
+        if (b0 & 0x40) st->buttons |= PAD_BTN_SHARE;
+        if (b0 & 0x80) st->buttons |= PAD_BTN_OPTIONS;
+
+        if (b1 & 0x01) st->r2 = 255;                    /* wheel R2 button = full gas  */
+        if (b1 & 0x02) st->l2 = 255;                    /* wheel L2 button = full brake */
+        /* b1 & 0x04 = "+" button, b1 & 0x20 = "S" button: not mapped */
+        if (b1 & 0x10) st->buttons |= PAD_BTN_PS;
+        if (b1 & 0x40) st->buttons |= PAD_BTN_TOUCHPAD; /* "P" button */
+
+        if (b2 & 0x20) st->buttons |= PAD_BTN_L3;
+        if (b2 & 0x40) st->buttons |= PAD_BTN_R3;
+
+        switch (d[18] & 0x0F) {
+        case 0: st->buttons |= PAD_DPAD_UP; break;
+        case 1: st->buttons |= PAD_DPAD_UP | PAD_DPAD_RIGHT; break;
+        case 2: st->buttons |= PAD_DPAD_RIGHT; break;
+        case 3: st->buttons |= PAD_DPAD_DOWN | PAD_DPAD_RIGHT; break;
+        case 4: st->buttons |= PAD_DPAD_DOWN; break;
+        case 5: st->buttons |= PAD_DPAD_DOWN | PAD_DPAD_LEFT; break;
+        case 6: st->buttons |= PAD_DPAD_LEFT; break;
+        case 7: st->buttons |= PAD_DPAD_UP | PAD_DPAD_LEFT; break;
+        default: break;
+        }
         return 1;
     }
 

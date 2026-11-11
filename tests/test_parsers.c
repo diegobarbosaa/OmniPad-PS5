@@ -36,28 +36,24 @@ static void test_ds4_usb_parsing(void)
 
 static void test_switch_pro_usb_parsing(void)
 {
-    printf("Testing Switch Pro USB parsing... ");
+    printf("Testing Switch Pro full USB 0x30 report... ");
     uint8_t report[64];
     memset(report, 0, sizeof(report));
-    report[3] = 0x01 | 0x40; /* B (Cross) + L1 */
-    report[4] = 0x10;        /* Home (PS button) */
-    report[5] = 0x02;        /* Dpad UP */
-
-    /* Sticks at bytes 6..11 */
-    report[6] = 0x00;
-    report[7] = 0x80;
-    report[8] = 0x80;
-    report[9] = 0x00;
-    report[10] = 0x80;
-    report[11] = 0x80;
-
+    report[0] = 0x30;
+    report[3] = 0x04 | 0x40; /* B -> Cross, R -> R1 */
+    report[4] = 0x10;        /* Home -> PS */
+    report[5] = 0x02;        /* D-pad Up */
+    report[6] = 0x00; report[7] = 0x08; report[8] = 0x80;
+    report[9] = 0x00; report[10] = 0x08; report[11] = 0x80;
     pad_state_t st;
-    int res = usb_parse_input_report(CTRL_NINTENDO_SWITCH_PRO, report, sizeof(report), &st);
-    assert(res == 1);
+    assert(usb_parse_input_report(CTRL_NINTENDO_SWITCH_PRO, report, sizeof(report), &st));
     assert(st.buttons & PAD_BTN_CROSS);
-    assert(st.buttons & PAD_BTN_L1);
+    assert(st.buttons & PAD_BTN_R1);
     assert(st.buttons & PAD_BTN_PS);
     assert(st.buttons & PAD_DPAD_UP);
+    assert(st.lx == 128 && st.ly == 128 && st.rx == 128 && st.ry == 128);
+    report[0] = 0x81;
+    assert(!usb_parse_input_report(CTRL_NINTENDO_SWITCH_PRO, report, sizeof(report), &st));
     printf("OK!\n");
 }
 
@@ -267,20 +263,20 @@ static void test_machenike_g5_pro_wired_usb_c(void)
     assert(t4 == CTRL_XBOX_XINPUT);
     assert(name != NULL && (strstr(name, "MACHENIKE") != NULL || strstr(name, "Machenike") != NULL));
 
-    /* 5. Test parsing report with vid=0x2345 */
+    /* 5. Parse a real XInput frame (0x00, len 0x14, buttons at offset 2) for vid=0x2345 */
     uint8_t report[20];
     memset(report, 0, sizeof(report));
-    report[0] = 0x01; /* Report ID */
-    report[1] = 0x00; report[2] = 0x80; /* LX = 128 */
-    report[3] = 0x00; report[4] = 0x80; /* LY = 128 */
-    report[5] = 0x00; report[6] = 0x80; /* RX = 128 */
-    report[7] = 0x00; report[8] = 0x80; /* RY = 128 */
-    report[15] = 0x01; /* Button A -> Cross */
-
+    report[0] = 0x00; report[1] = 0x14;
+    report[3] = 0x10;            /* btn high byte 0x10 -> 0x1000 = A -> Cross */
+    report[4] = 200;             /* LT */
     pad_state_t st;
-    int res = profiles_parse_report(0x2345, 0xe02b, report, sizeof(report), &st);
+    usb_controller_type_t t = usb_identify_controller(0x2345, 0xe02b, NULL);
+    assert(t == CTRL_XBOX_XINPUT);
+    memset(&st, 0, sizeof(st));
+    int res = usb_parse_input_report(t, report, sizeof(report), &st);
     assert(res == 1);
     assert(st.buttons & PAD_BTN_CROSS);
+    assert(st.l2 == 200);
 
     printf("OK!\n");
 }
@@ -296,6 +292,114 @@ static void test_dongle_standby_isolation(void)
     assert(name != NULL && strstr(name, "Dongle") != NULL);
 
     printf("OK!\n");
+}
+
+/* Build a T598 report 0x07 from the first 19 data bytes of a real capture */
+static void t598_report(uint8_t *out, const uint8_t *d19)
+{
+    memset(out, 0, 64);
+    out[0] = 0x07;
+    memcpy(out + 1, d19, 19);
+}
+
+static void test_thrustmaster_t598(void)
+{
+    printf("Testing Thrustmaster T598 wheel (real captured reports)... ");
+    const char *name = NULL;
+    assert(usb_identify_controller(0x044f, 0xb696, &name) == CTRL_THRUSTMASTER_T598);
+    assert(name != NULL && strstr(name, "T598") != NULL);
+
+    static const uint8_t rest[19]   = {0x54,0x80,0xff,0x03,0xff,0x03,0xff,0x03,0,0,0x80,0x80,0x80,0x80,0,0,0,0,0x08};
+    static const uint8_t left[19]   = {0x00,0x00,0xff,0x03,0xff,0x03,0xff,0x03,0,0,0x80,0x80,0x80,0x80,0,0,0,0,0x08};
+    static const uint8_t right[19]  = {0xff,0xff,0xff,0x03,0xff,0x03,0xff,0x03,0,0,0x80,0x80,0x80,0x80,0,0,0,0,0x08};
+    static const uint8_t gas[19]    = {0x69,0xe6,0xff,0x03,0x00,0x00,0xff,0x03,0,0,0x80,0x80,0x80,0x80,0,0,0,0,0x08};
+    static const uint8_t brake[19]  = {0x69,0xe6,0x00,0x00,0xff,0x03,0xff,0x03,0,0,0x80,0x80,0x80,0x80,0,0,0,0,0x08};
+    static const uint8_t paddle[19] = {0x8a,0xe7,0xff,0x03,0xff,0x03,0xff,0x03,0,0,0x80,0x80,0x80,0x80,0x01,0,0,0,0x08};
+
+    uint8_t r[64];
+    pad_state_t st;
+
+    t598_report(r, rest);
+    assert(usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st) == 1);
+    assert(st.lx == 128 && st.ly == 128 && st.l2 == 0 && st.r2 == 0 && st.buttons == 0);
+
+    t598_report(r, left);
+    usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st);
+    assert(st.lx == 0);
+
+    t598_report(r, right);
+    usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st);
+    assert(st.lx == 255);
+
+    t598_report(r, gas);
+    usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st);
+    assert(st.r2 == 255 && st.l2 == 0);
+
+    t598_report(r, brake);
+    usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st);
+    assert(st.l2 == 255 && st.r2 == 0);
+
+    /* A small turn just past center must already move the stick past the game's deadzone */
+    t598_report(r, rest);
+    r[1] = 0x00; r[2] = 0x82; /* 0x8200 = 512 units right of center */
+    usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st);
+    assert(st.lx >= 128 + (128 * T598_STEER_ANTIDEADZONE_PCT / 100));
+    r[1] = 0x00; r[2] = 0x7e; /* 512 units left */
+    usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st);
+    assert(st.lx <= 128 - (128 * T598_STEER_ANTIDEADZONE_PCT / 100));
+
+    t598_report(r, paddle);
+    usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st);
+    assert(st.buttons == PAD_BTN_L1);
+
+    /* Buttons from the step-4 capture: cross = byte 14 bit 5, PS = byte 15 bit 4, R3 = byte 16 bit 6 */
+    t598_report(r, rest);
+    r[1 + 14] = 0x20; r[1 + 15] = 0x10; r[1 + 16] = 0x40; r[1 + 18] = 0x02; /* + d-pad right */
+    usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st);
+    assert(st.buttons == (PAD_BTN_CROSS | PAD_BTN_PS | PAD_BTN_R3 | PAD_DPAD_RIGHT));
+
+    /* Vendor / force-feedback reports must be ignored */
+    memset(r, 0x55, sizeof(r));
+    r[0] = 0x02;
+    assert(usb_parse_input_report(CTRL_THRUSTMASTER_T598, r, sizeof(r), &st) == 0);
+    printf("OK!\n");
+}
+
+static void test_wiiu_gc_adapter(void)
+{
+    printf("Testing Wii U GameCube adapter (Dolphin report layout)... ");
+    assert(usb_identify_controller(0x057e, 0x0337, NULL) == CTRL_NINTENDO_WIIU_GC_ADAPTER);
+
+    uint8_t r[37];
+    pad_state_t st;
+    memset(r, 0, sizeof(r));
+    r[0] = 0x21;
+
+    /* Port 1 empty: parsed, but neutral */
+    assert(usb_parse_input_report(CTRL_NINTENDO_WIIU_GC_ADAPTER, r, sizeof(r), &st) == 1);
+    assert(st.buttons == 0 && st.lx == 128 && st.ly == 128);
+
+    /* Wired pad on port 1: A + D-pad up + Start + Z, stick full up-right, L clicked, R half */
+    r[1] = 0x10;
+    r[2] = 0x01 | 0x80;
+    r[3] = 0x01 | 0x02 | 0x08;
+    r[4] = 255; r[5] = 255;   /* main stick right / up */
+    r[6] = 128; r[7] = 0;     /* C-stick down */
+    r[8] = 40;  r[9] = 128;
+    assert(usb_parse_input_report(CTRL_NINTENDO_WIIU_GC_ADAPTER, r, sizeof(r), &st) == 1);
+    assert(st.buttons & PAD_BTN_CROSS);
+    assert(st.buttons & PAD_DPAD_UP);
+    assert(st.buttons & PAD_BTN_OPTIONS);
+    assert(st.buttons & PAD_BTN_R1);
+    assert(st.lx == 255 && st.ly == 0);
+    assert(st.rx == 128 && st.ry == 255);
+    assert(st.l2 == 255 && (st.buttons & PAD_BTN_L2));
+    assert(st.r2 == 128 && (st.buttons & PAD_BTN_R2));
+
+    /* Anything that is not a 0x21 report is rejected (no generic HID fallback) */
+    r[0] = 0x02;
+    assert(usb_parse_input_report(CTRL_NINTENDO_WIIU_GC_ADAPTER, r, sizeof(r), &st) == 0);
+    printf("PASSED\n");
 }
 
 int main(void)
@@ -316,6 +420,8 @@ int main(void)
     test_dongle_standby_isolation();
     test_ds3_usb_parsing();
     test_shadowmount_storage_isolation();
+    test_thrustmaster_t598();
+    test_wiiu_gc_adapter();
 
     printf("\nAll parser tests passed successfully!\n");
     return 0;

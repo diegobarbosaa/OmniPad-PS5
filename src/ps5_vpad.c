@@ -1,7 +1,9 @@
 #include "ps5_vpad.h"
+#include "remap.h"
 #include "shellui_inject.h"
 #include "log.h"
 #include "util.h"
+#include "input_watchdog.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +20,20 @@
 #include <pthread.h>
 
 #define VIRTUAL_DEVICE_DUALSENSE 3
+#define VIRTUAL_DEVICE_DUALSHOCK 2
+
+/* Which device type the next AddDevice uses. Can be flipped at runtime from
+ * the web dashboard via vpad_set_device_type(). Takes effect on the next
+ * virtual pad creation; existing live slots keep whatever they were made
+ * with. */
+static int g_vpad_device_type = VIRTUAL_DEVICE_DUALSENSE;
+
+int vpad_get_device_type(void) { return g_vpad_device_type; }
+void vpad_set_device_type(int type)
+{
+    if (type == VIRTUAL_DEVICE_DUALSENSE || type == VIRTUAL_DEVICE_DUALSHOCK)
+        g_vpad_device_type = type;
+}
 #define T_IDENTIFY               3000   /* ms to wait for DEVICE_ADDED */
 #define T_AMBIGUITY               300   /* ms after match before committing */
 #define LINE_MAX_LEN             1024
@@ -55,6 +71,8 @@ typedef struct {
     uint32_t        packets_injected;
     long            connected_time;
     long            last_update_time;
+    long            stale_timeout_ms;
+    int             stale_gap_logged; /* One diagnostic per report gap */
     pad_state_t     pad_state;      /* Latch state for continuous 250Hz injection */
     int             consecutive_insert_errors;
     int             ps_pending_on_ready;
@@ -157,6 +175,9 @@ static void vpad_recycle_slot_locked(int slot)
     s->ps_pending_on_ready = pending_ps;
     s->conn_type = saved_type;
     snprintf(s->name, sizeof(s->name), "%s", saved_name);
+    s->last_update_time = 0;
+    s->stale_gap_logged = 0;
+    /* Same physical device: keep its configured bound, discard input age. */
     pad_state_neutral(&s->pad_state);
 
     log_line("vpad: slot %d recycled (old h=%d dev=0x%llx uid=0x%08x) -> QUEUED for re-registration",
@@ -435,7 +456,7 @@ int vpad_init(void)
     return 1;
 }
 
-int vpad_add(int slot, pad_conn_type_t type, const char *name)
+int vpad_add_with_timeout(int slot, pad_conn_type_t type, const char *name, long timeout_ms)
 {
     if (!g_ready || slot < 0 || slot >= MAX_SLOTS) return 0;
 
@@ -450,6 +471,7 @@ int vpad_add(int slot, pad_conn_type_t type, const char *name)
     g_slots[slot].handle = -1;
     g_slots[slot].alt_handle = -1;
     g_slots[slot].conn_type = type;
+    g_slots[slot].stale_timeout_ms = timeout_ms > 0 ? timeout_ms : OMNI_DEFAULT_STALE_TIMEOUT_MS;
     if (name) snprintf(g_slots[slot].name, sizeof(g_slots[slot].name), "%s", name);
     g_slots[slot].connected_time = now_ms();
     pad_state_neutral(&g_slots[slot].pad_state);
@@ -469,6 +491,11 @@ int vpad_add(int slot, pad_conn_type_t type, const char *name)
     log_line("vpad: slot %d queued (%s via %s)", slot,
              g_slots[slot].name, conn_str);
     return 1;
+}
+
+int vpad_add(int slot, pad_conn_type_t type, const char *name)
+{
+    return vpad_add_with_timeout(slot, type, name, OMNI_DEFAULT_STALE_TIMEOUT_MS);
 }
 
 static void start_identification(int slot)
@@ -510,7 +537,7 @@ static void start_identification(int slot)
 
     int32_t ret = 0;
 #ifdef __PROSPERO__
-    ret = scePadVirtualDeviceAddDevice(&param, VIRTUAL_DEVICE_DUALSENSE);
+    ret = scePadVirtualDeviceAddDevice(&param, g_vpad_device_type);
 #endif
     log_line("vpad: slot %d AddDevice -> 0x%08x", slot, (unsigned)ret);
 
@@ -573,6 +600,13 @@ static void finish_identification(long now)
 
     g_pending = -1;
     close_kernel_log();
+
+    if (g_matches == 0) {
+        /* klog did not contain expected device_id line (subType 22/0x16, DEVICE_ADDED).
+         * This can happen on firmware versions where the klog format changed.
+         * The virtual device was already added (popup appeared), so fall back to handle scanning. */
+        log_line("vpad: slot %d no klog device match — falling back to handle scan", slot);
+    }
 
     if (g_matches == 1) {
         s->device_id = g_match_dev;
@@ -695,9 +729,37 @@ void vpad_poll(long now)
     for (int i = 0; i < MAX_SLOTS; i++) {
         pthread_mutex_lock(&g_vpad_mutex);
         if (g_slots[i].status == VP_READY && (g_slots[i].handle > 0 || g_slots[i].alt_handle > 0)) {
-            /* Reset latched state to neutral if no updates received for > 500ms (avoids stuck buttons on sleep) */
-            if (now - g_slots[i].last_update_time > 500) {
+            /* Some receiver/HID bridges send state changes but not continuous
+             * reports while a button is held. The 500ms global fail-safe
+             * wrongly released R2 and sticks in those cases. Keep a bounded
+             * state latch for the selected GameSir G7 / Ultimate 2 receivers;
+             * still release immediately on an actual incoming release report,
+             * physical USB unplug, or slot removal. RF link loss without a
+             * physical USB disconnect remains indistinguishable from a silent
+             * dongle, so the longer bound is deliberately not infinite. */
+            long silence_ms = now - g_slots[i].last_update_time;
+            long timeout_ms = g_slots[i].stale_timeout_ms > 0 ?
+                g_slots[i].stale_timeout_ms : OMNI_DEFAULT_STALE_TIMEOUT_MS;
+            /* USB/BT pads are event-driven (see remap/USB notes): only watchdog
+             * network streams and drivers that picked an explicit bound. */
+            int watch = g_slots[i].conn_type == CONN_NETWORK_STREAM ||
+                        timeout_ms > OMNI_DEFAULT_STALE_TIMEOUT_MS;
+            if (watch && g_slots[i].last_update_time > 0 && silence_ms > timeout_ms) {
+                if (!g_slots[i].stale_gap_logged &&
+                    omni_state_has_active_input(&g_slots[i].pad_state)) {
+                    log_line("vpad: slot %d watchdog cleared held input after %ld ms no reports (%s)",
+                             i + 1, silence_ms, g_slots[i].name);
+                }
+                g_slots[i].stale_gap_logged = 1;
                 pad_state_neutral(&g_slots[i].pad_state);
+            } else if (timeout_ms > OMNI_DEFAULT_STALE_TIMEOUT_MS &&
+                       g_slots[i].last_update_time > 0 &&
+                       silence_ms > OMNI_DEFAULT_STALE_TIMEOUT_MS &&
+                       !g_slots[i].stale_gap_logged &&
+                       omni_state_has_active_input(&g_slots[i].pad_state)) {
+                log_line("vpad: slot %d retaining held input (%ld ms since last report, %s)",
+                         i + 1, silence_ms, g_slots[i].name);
+                g_slots[i].stale_gap_logged = 1;
             }
 
             if (g_slots[i].handle <= 0 && g_slots[i].alt_handle > 0) {
@@ -816,9 +878,32 @@ int vpad_slot_is_free(int slot)
     return g_slots[slot].status == VP_FREE;
 }
 
-void vpad_update(int slot, const pad_state_t *st)
+static uint32_t g_remap[MAX_SLOTS][REMAP_N];
+static volatile int g_remap_on[MAX_SLOTS];
+
+void vpad_set_remap(int slot, const uint32_t *map)
+{
+    if (slot < 0 || slot >= MAX_SLOTS) return;
+    int on = 0;
+    g_remap_on[slot] = 0;               /* readers fall back to the auto layout while it changes */
+    for (int i = 0; i < REMAP_N; i++) {
+        g_remap[slot][i] = map ? map[i] : remap_bits[i];
+        if (g_remap[slot][i] != remap_bits[i]) on = 1;
+    }
+    g_remap_on[slot] = on;
+}
+
+static void vpad_update_internal(int slot, const pad_state_t *st, int notify_shellui, int fresh_input)
 {
     if (!st || slot < 0 || slot >= MAX_SLOTS) return;
+
+    /* User overrides on top of the auto-detected layout (remap.h). */
+    pad_state_t remapped;
+    if (g_remap_on[slot]) {
+        remapped = *st;
+        remap_apply(g_remap[slot], &remapped);
+        st = &remapped;
+    }
 
     static uint32_t s_prev_btn[MAX_SLOTS] = {0};
     uint32_t prev = s_prev_btn[slot];
@@ -830,7 +915,7 @@ void vpad_update(int slot, const pad_state_t *st)
     int32_t handle = g_slots[slot].handle;
     int32_t uid = g_slots[slot].user_id;
 
-    if (ps_pressed) {
+    if (ps_pressed && notify_shellui) {
         if (status == VP_READY && handle > 0) {
             log_line("vpad: physical PS button pressed on slot %d (handle %d, user 0x%08x)",
                      slot + 1, handle, (unsigned)uid);
@@ -850,11 +935,32 @@ void vpad_update(int slot, const pad_state_t *st)
 
     g_slots[slot].battery_level = st->battery_level;
     g_slots[slot].battery_charging = st->battery_charging;
-    g_slots[slot].last_update_time = now_ms();
+    if (fresh_input) {
+        g_slots[slot].last_update_time = now_ms();
+        g_slots[slot].stale_gap_logged = 0;
+    }
 
     /* Latch state; vpad_poll handles continuous 250Hz injection */
     g_slots[slot].pad_state = *st;
     pthread_mutex_unlock(&g_vpad_mutex);
+}
+
+void vpad_update(int slot, const pad_state_t *st)
+{
+    vpad_update_internal(slot, st, 1, 1);
+}
+
+/* A maintained input level must not acquire an independent ShellUI UP frame.
+ * Profile activation in finish_identification() remains unchanged. */
+void vpad_update_level(int slot, const pad_state_t *st)
+{
+    vpad_update_internal(slot, st, 0, 1);
+}
+
+/* Timer-only level transition: never refresh physical input freshness. */
+void vpad_update_cached_level(int slot, const pad_state_t *st)
+{
+    vpad_update_internal(slot, st, 0, 0);
 }
 
 void vpad_press_ps_button(int slot)
@@ -894,6 +1000,7 @@ void vpad_get_slot_info(int slot, vpad_slot_info_t *out)
     out->packets_injected = g_slots[slot].packets_injected;
     out->connected_time = g_slots[slot].connected_time;
     out->last_update_time = g_slots[slot].last_update_time;
+    out->stale_timeout_ms = g_slots[slot].stale_timeout_ms;
     pthread_mutex_unlock(&g_vpad_mutex);
 }
 

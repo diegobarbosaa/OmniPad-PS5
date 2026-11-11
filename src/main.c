@@ -4,9 +4,13 @@
 #include "usb_hotplug.h"
 #include "web.h"
 #include "tcp_stream.h"
+#include "bt_host.h"
+#include "ps5_haptic.h"
 #include "shellui_inject.h"
 #include "log.h"
 #include "util.h"
+
+#include <sys/stat.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -122,6 +126,17 @@ int main(int argc, char **argv)
         log_line("main: Warning: usb_hotplug_init failed (USB disabled)");
     }
 
+    /* 3b. Initialize Bluetooth host (ported from AnyPad). Starts disabled —
+     * the chip is only opened once the user asks to pair from the dashboard
+     * so the system's own DualSense stack keeps the radio to itself until
+     * then. Mapping directory is set here so u2_setup() finds any saved
+     * paddle layout when a pad connects. */
+    mkdir("/data/omnipad", 0755);
+    mkdir("/data/omnipad/maps", 0755);
+    extern void profiles_set_map_dir(const char *);
+    profiles_set_map_dir(BT_MAP_DIR);
+    log_line("main: Bluetooth host staged; use the dashboard to enable pairing");
+
     /* 4. Initialize Web Dashboard */
     if (!web_init(ANYPAD_DEFAULT_PORT)) {
         log_line("main: Warning: web_init failed");
@@ -138,6 +153,9 @@ int main(int argc, char **argv)
 
         vpad_poll(now);
         usb_hotplug_poll(now);
+        bt_host_poll(now);              /* no-op until a BT session is enabled */
+        bt_haptic_pump();               /* forwards Avcap2 haptic levels to BT pads
+                                         * when the dashboard toggle is on */
         web_poll(now);
         tcp_stream_poll(now);
 
@@ -146,6 +164,10 @@ int main(int argc, char **argv)
     }
 
     log_line("main: Shutting down OmniPad PS5...");
+    haptic_want(0);
+    haptic_quit();                      /* leave the Avcap2 service with a clean close */
+    bt_host_cleanup();                  /* close BT first so chip state is restored
+                                         * before the system reclaims the radio */
     tcp_stream_cleanup();
     web_cleanup();
     usb_hotplug_cleanup();

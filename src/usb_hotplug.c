@@ -1,8 +1,10 @@
 #include "usb_hotplug.h"
 #include "usb_controllers.h"
+#include "ps_chord_hold.h"
 #include "ps5_vpad.h"
 #include "log.h"
 #include "util.h"
+#include "remap.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,13 +33,26 @@ typedef struct {
     usb_controller_type_t type;
     const char           *name;
     pad_conn_type_t       conn_type;
+    long                  stale_timeout_ms;
     pthread_t             thread;
     volatile int          stop_thread;
+
+    /* OmniPad: game rumble, written by the main loop, sent by the reader. */
+    volatile uint8_t      rum_strong, rum_weak;
+    uint8_t               rum_sent_strong, rum_sent_weak;
+    uint8_t               gip_seq;
+    uint8_t               sw_counter;       /* Switch: output report packet counter */
+    int                   sw_vib_on;        /* Switch: vibration enabled (subcommand 0x48) */
+    long                  rum_sent_at;      /* Switch: last rumble report, for the refresh */
+    volatile int          small_motor;      /* from <map dir>/USB_VVVV_PPPP.map; 1 = on */
 
 #ifdef __PROSPERO__
     struct usb_fs_endpoint endpoints[4];
     uint8_t               in_index;
     uint8_t               out_index;
+    uint8_t               in_armed;
+    uint8_t               in_done_pending; /* IN completion consumed by a send; data is in rx_buf */
+    uint8_t               is_gip;          /* Xbox One/Series protocol, from the interface descriptor */
     int                   has_out;
     int                   use_fs;
     void                 *fs_frame[4];
@@ -56,14 +71,57 @@ typedef struct {
 } usb_hotplug_state_t;
 
 static usb_hotplug_state_t g_usb_hotplug;
+
+/* Per-model USB settings file: USB pads have no unique id like a BT address,
+ * so settings are kept per VID:PID. Default: small motor on. */
+#define USB_MAP_DIR "/data/omnipad/maps"
+/* Button overrides for this model, from <map dir>/USB_VVVV_PPPP.map. */
+static void usb_apply_remap(int slot, uint16_t vid, uint16_t pid)
+{
+    char id[24];
+    uint32_t map[REMAP_N];
+    snprintf(id, sizeof id, "USB_%04X_%04X", vid, pid);
+    remap_load(id, map);
+    vpad_set_remap(slot, map);
+}
+
+static int usb_read_small_motor(uint16_t vid, uint16_t pid)
+{
+    char path[128], line[128];
+    int on = 1;
+    snprintf(path, sizeof path, USB_MAP_DIR "/USB_%04X_%04X.map", vid, pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return 1;
+    while (fgets(line, sizeof line, f)) {
+        char *k = line, *eq = strchr(line, '=');
+        if (!eq || *k == '#') continue;
+        *eq = 0;
+        while (*k == ' ' || *k == '\t') k++;
+        char *ke = eq; while (ke > k && (ke[-1] == ' ' || ke[-1] == '\t')) *--ke = 0;
+        if (strcmp(k, "small_motor") != 0) continue;
+        char *v = eq + 1; while (*v == ' ' || *v == '\t') v++;
+        on = strncmp(v, "off", 3) != 0;
+    }
+    fclose(f);
+    return on;
+}
 static uint32_t s_last_seen[6][21] = {{0}};
 
 #ifdef __PROSPERO__
 
-static void find_usb_endpoints(int fd, usb_controller_type_t type, uint16_t vid, uint16_t pid, uint8_t *in_addr, uint8_t *out_addr)
+/* GIP (Xbox One / Series) interfaces are vendor class 0xFF, subclass 0x47, protocol 0xD0.
+ * Matching on this instead of the Microsoft VID also covers licensed pads
+ * (PDP, Turtle Beach, PowerA, ...). */
+static int is_gip_interface(const uint8_t *d)
+{
+    return d[5] == 0xff && d[6] == 0x47 && d[7] == 0xd0;
+}
+
+static void find_usb_endpoints(int fd, usb_controller_type_t type, uint16_t vid, uint16_t pid, uint8_t *in_addr, uint8_t *out_addr, uint8_t *is_gip)
 {
     *in_addr = 0;
     *out_addr = 0;
+    *is_gip = (type == CTRL_XBOX_XINPUT && vid == 0x045e && pid != 0x028e);
     struct usb_gen_descriptor desc;
     uint8_t raw[512];
     memset(&desc, 0, sizeof(desc));
@@ -77,31 +135,44 @@ static void find_usb_endpoints(int fd, usb_controller_type_t type, uint16_t vid,
     uint8_t ins[8], outs[8];
     int in_cnt = 0, out_cnt = 0;
     int offset = 0;
+    int in_gip_iface = 0, gip_seen = 0;
+    uint8_t gip_in = 0, gip_out = 0;
     while (offset + 2 <= len) {
         int entry = raw[offset];
         if (entry < 2 || offset + entry > len) break;
         uint8_t bDescriptorType = raw[offset + 1];
+        if (bDescriptorType == 0x04 && entry >= 9) { /* Interface descriptor */
+            in_gip_iface = !gip_seen && raw[offset + 3] == 0 && is_gip_interface(raw + offset);
+            if (in_gip_iface) gip_seen = 1;
+        }
         if (bDescriptorType == 0x05 && entry >= 5) { /* Endpoint descriptor */
             uint8_t ep_addr = raw[offset + 2];
             uint8_t ep_attr = raw[offset + 3] & 0x03;
             if (ep_attr == 0x03 || ep_attr == 0x02) { /* Interrupt or Bulk */
                 if ((ep_addr & 0x80) && in_cnt < 8) ins[in_cnt++] = ep_addr;
                 else if (!(ep_addr & 0x80) && out_cnt < 8) outs[out_cnt++] = ep_addr;
+                if (in_gip_iface) {
+                    if ((ep_addr & 0x80) && !gip_in) gip_in = ep_addr;
+                    else if (!(ep_addr & 0x80) && !gip_out) gip_out = ep_addr;
+                }
             }
         }
         offset += entry;
     }
 
-    int is_xbox_one = (type == CTRL_XBOX_XINPUT && vid == 0x045e && pid != 0x028e);
+    if (gip_seen) *is_gip = 1;
 
-    if (is_xbox_one) {
-        /* Only Xbox One / Series X|S (GIP) uses EP 0x82 IN and 0x02 OUT */
+    if (*is_gip) {
+        /* Microsoft Xbox One / Series X|S use EP 0x82 IN and 0x02 OUT; other GIP pads
+         * use whatever their GIP interface declares. */
         for (int i = 0; i < in_cnt; i++) {
             if (ins[i] == 0x82) { *in_addr = 0x82; break; }
         }
         for (int i = 0; i < out_cnt; i++) {
             if (outs[i] == 0x02) { *out_addr = 0x02; break; }
         }
+        if (*in_addr == 0) *in_addr = gip_in;
+        if (*out_addr == 0) *out_addr = gip_out;
     } else {
         /* Xbox 360, Machenike G5 Pro, ShanWan, Switch, DS4, DS3 all use EP 0x81 IN */
         for (int i = 0; i < in_cnt; i++) {
@@ -133,13 +204,16 @@ static int usb_fs_setup_device(usb_slot_device_t *sdev)
     }
 
     uint8_t in_addr = 0, out_addr = 0;
-    find_usb_endpoints(sdev->fd, sdev->type, sdev->vid, sdev->pid, &in_addr, &out_addr);
+    find_usb_endpoints(sdev->fd, sdev->type, sdev->vid, sdev->pid, &in_addr, &out_addr, &sdev->is_gip);
+    sdev->in_done_pending = 0;
 
-    int is_xbox_one = (sdev->type == CTRL_XBOX_XINPUT && sdev->vid == 0x045e && sdev->pid != 0x028e);
+    int is_xbox_one = sdev->is_gip;
+    if (is_xbox_one && !(sdev->type == CTRL_XBOX_XINPUT && sdev->vid == 0x045e))
+        log_line("usb_hotplug: %s has a GIP interface, using the Xbox One protocol", sdev->name);
     if (in_addr == 0) {
         in_addr = is_xbox_one ? 0x82 : 0x81;
     }
-    if (out_addr == 0 && (sdev->type == CTRL_XBOX_XINPUT)) {
+    if (out_addr == 0 && (sdev->type == CTRL_XBOX_XINPUT || is_xbox_one)) {
         out_addr = is_xbox_one ? 0x02 : 0x01;
     }
 
@@ -218,25 +292,49 @@ static int usb_fs_setup_device(usb_slot_device_t *sdev)
 
 static int usb_fs_recv_packet(usb_slot_device_t *dev, uint8_t *buffer, uint32_t length, int timeout_ms)
 {
+    (void)timeout_ms;
     if (!dev->use_fs) return -1;
     struct usb_fs_endpoint *ep = &dev->endpoints[dev->in_index];
-    uint32_t ask_len = length > 64 ? 64 : length;
-    dev->fs_len[dev->in_index] = ask_len;
-    ep->timeout = (uint16_t)timeout_ms;
 
-    struct usb_fs_start start;
-    memset(&start, 0, sizeof(start));
-    start.ep_index = dev->in_index;
-    if (ioctl(dev->fd, USB_FS_START, &start) != 0) {
-        if (errno != EBUSY) return -1;
+    if (dev->in_done_pending) {
+        /* usb_fs_send_packet() picked up our IN completion while waiting for its own. */
+        dev->in_done_pending = 0;
+        dev->in_armed = 0;
+        if (ep->status == USB_ERR_NORMAL_COMPLETION || ep->status == USB_ERR_SHORT_XFER) {
+            uint32_t n = dev->fs_len[dev->in_index];
+            if (n > length) n = length;
+            memcpy(buffer, dev->rx_buf, n);
+            return (int)n;
+        }
+        return 0;
     }
 
-    int spins = timeout_ms / 4 + 1;
+    if (!dev->in_armed) {
+        uint32_t ask_len = length > 64 ? 64 : length;
+        dev->fs_len[dev->in_index] = ask_len;
+        ep->timeout = 0; /* USB_FS_TIMEOUT_NONE: keep transfer armed without kernel timer aborts */
+
+        struct usb_fs_start start;
+        memset(&start, 0, sizeof(start));
+        start.ep_index = dev->in_index;
+        if (ioctl(dev->fd, USB_FS_START, &start) != 0) {
+            if (errno != EBUSY) return -1;
+        }
+        dev->in_armed = 1;
+    }
+
+    int spins = 4;
     while (spins-- > 0) {
         struct usb_fs_complete complete;
         memset(&complete, 0, sizeof(complete));
         complete.ep_index = dev->in_index;
         if (ioctl(dev->fd, USB_FS_COMPLETE, &complete) == 0) {
+            if (complete.ep_index != dev->in_index) {
+                /* An OUT transfer completed; keep checking for our IN endpoint */
+                spins++;
+                continue;
+            }
+            dev->in_armed = 0;
             if (ep->status == USB_ERR_NORMAL_COMPLETION || ep->status == USB_ERR_SHORT_XFER) {
                 uint32_t n = dev->fs_len[dev->in_index];
                 if (n > length) n = length;
@@ -245,9 +343,10 @@ static int usb_fs_recv_packet(usb_slot_device_t *dev, uint8_t *buffer, uint32_t 
             }
             return 0;
         }
-        if (errno == EBUSY || errno == ETIMEDOUT || errno == EAGAIN || errno == EWOULDBLOCK) {
+        if (errno == EBUSY || errno == ETIMEDOUT || errno == EAGAIN) {
             /* Transfer still in progress or waiting for packet — continue select loop */
         } else {
+            dev->in_armed = 0;
             return -1;
         }
 
@@ -258,7 +357,7 @@ static int usb_fs_recv_packet(usb_slot_device_t *dev, uint8_t *buffer, uint32_t 
         FD_SET(dev->fd, &rset);
         FD_SET(dev->fd, &wset);
         wait.tv_sec = 0;
-        wait.tv_usec = 4000;
+        wait.tv_usec = 1000;
         select(dev->fd + 1, &rset, &wset, NULL, &wait);
     }
     return 0;
@@ -286,6 +385,13 @@ static int usb_fs_send_packet(usb_slot_device_t *dev, const uint8_t *buffer, uin
         memset(&complete, 0, sizeof(complete));
         complete.ep_index = dev->out_index;
         if (ioctl(dev->fd, USB_FS_COMPLETE, &complete) == 0) {
+            if (complete.ep_index != dev->out_index) {
+                /* The armed IN transfer finished first. Keep it for the next
+                 * usb_fs_recv_packet() instead of dropping the input report. */
+                if (complete.ep_index == dev->in_index && dev->in_armed) dev->in_done_pending = 1;
+                spins++;
+                continue;
+            }
             return (ep->status == USB_ERR_NORMAL_COMPLETION || ep->status == USB_ERR_SHORT_XFER) ? (int)send_len : -1;
         }
         if (errno != EBUSY) return -1;
@@ -318,6 +424,104 @@ static void ack_gip_packet(usb_slot_device_t *dev, const uint8_t *report, int co
     }
 }
 
+/* Nintendo Switch HD rumble amplitude, 0..255 level -> encoded amplitude
+ * (0..100), from CTCaer's Joy-Con formula (jc_toolkit):
+ *   a > 0.23: log2(a * 8.7) * 32;  a > 0.12: log2(a * 17) * 16;
+ *   a <= 0.12: linear from 0 up to the middle branch's value at 0.12.
+ *   a = level / 255.
+ * Precomputed so the payload needs no libm. */
+static const uint8_t k_switch_amp[256] = {
+      0,  1,  1,  2,  2,  3,  3,  4,  4,  5,  5,  6,  6,  7,  8,  8,
+      9,  9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 15, 15, 16, 16, 17,
+     17, 18, 19, 20, 20, 21, 21, 22, 23, 23, 24, 24, 25, 25, 26, 26,
+     27, 27, 28, 28, 29, 29, 30, 30, 30, 31, 31, 32, 33, 34, 35, 35,
+     36, 37, 37, 38, 39, 40, 40, 41, 41, 42, 43, 43, 44, 45, 45, 46,
+     46, 47, 47, 48, 49, 49, 50, 50, 51, 51, 52, 52, 53, 53, 54, 54,
+     55, 55, 56, 56, 57, 57, 58, 58, 58, 59, 59, 60, 60, 61, 61, 61,
+     62, 62, 63, 63, 64, 64, 64, 65, 65, 65, 66, 66, 67, 67, 67, 68,
+     68, 68, 69, 69, 69, 70, 70, 71, 71, 71, 72, 72, 72, 73, 73, 73,
+     73, 74, 74, 74, 75, 75, 75, 76, 76, 76, 77, 77, 77, 77, 78, 78,
+     78, 79, 79, 79, 79, 80, 80, 80, 81, 81, 81, 81, 82, 82, 82, 82,
+     83, 83, 83, 84, 84, 84, 84, 85, 85, 85, 85, 86, 86, 86, 86, 87,
+     87, 87, 87, 87, 88, 88, 88, 88, 89, 89, 89, 89, 90, 90, 90, 90,
+     90, 91, 91, 91, 91, 92, 92, 92, 92, 92, 93, 93, 93, 93, 93, 94,
+     94, 94, 94, 95, 95, 95, 95, 95, 96, 96, 96, 96, 96, 96, 97, 97,
+     97, 97, 97, 98, 98, 98, 98, 98, 99, 99, 99, 99, 99,100,100,100
+};
+
+/* One actuator's 4 bytes: high band 320 Hz carries the weak motor, low band
+ * 160 Hz the strong one. Both 0 gives the neutral 00 01 40 40. */
+static void switch_rumble_block(uint8_t *b, uint8_t strong, uint8_t weak)
+{
+    const uint16_t hf = 0x0100;                 /* (round(log2(320/10)*32) - 0x60) * 4 */
+    const uint8_t  lf = 0x40;                   /*  round(log2(160/10)*32) - 0x40      */
+    uint16_t hf_amp = (uint16_t)(k_switch_amp[weak] * 2);
+    uint16_t lf_amp = (uint16_t)(k_switch_amp[strong] / 2 + 0x40);
+    b[0] = (uint8_t)(hf & 0xFF);
+    b[1] = (uint8_t)(hf_amp + ((hf >> 8) & 0xFF));
+    b[2] = (uint8_t)(lf + ((lf_amp >> 8) & 0xFF));
+    b[3] = (uint8_t)(lf_amp & 0xFF);
+}
+
+/* Sends the pending rumble level if it changed. Called from the reader thread,
+ * which owns the device. Formats:
+ *   Switch Pro (USB): subcommand 0x48 once, then report 10 cnt + 2 x 4-byte HD rumble
+ *   Xbox One GIP:  09 00 seq 09 00 0F LT RT L R dur delay repeat (motors 0..100)
+ *   XInput / 360 (incl. 8BitDo receivers in X-input mode): 00 08 00 L R 00 00 00
+ *   DualShock 4 USB: report 05, flags 01 (rumble only), [4] weak, [5] strong */
+static void usb_send_rumble(usb_slot_device_t *dev, int is_xbox_one)
+{
+    uint8_t s = dev->rum_strong, w = dev->small_motor ? dev->rum_weak : 0;
+    int changed = s != dev->rum_sent_strong || w != dev->rum_sent_weak;
+    if (!dev->use_fs || !dev->has_out) return;
+    int r = -1;
+    if (dev->type == CTRL_NINTENDO_SWITCH_PRO) {
+        /* Switch pads stop on their own unless rumble keeps coming, so a
+         * running level is sent again every 30 ms, not only on change. */
+        long now = now_ms();
+        if (!changed && (!(s | w) || now - dev->rum_sent_at < 30)) return;
+        uint8_t pkt[64];
+        memset(pkt, 0, sizeof pkt);
+        if (!dev->sw_vib_on) {
+            /* Output report 0x01, subcommand 0x48 0x01: vibration on. */
+            pkt[0] = 0x01;
+            pkt[1] = dev->sw_counter++ & 0x0F;
+            switch_rumble_block(pkt + 2, 0, 0);
+            switch_rumble_block(pkt + 6, 0, 0);
+            pkt[10] = 0x48;
+            pkt[11] = 0x01;
+            if (usb_fs_send_packet(dev, pkt, sizeof pkt, 8) >= 0) dev->sw_vib_on = 1;
+            memset(pkt, 0, sizeof pkt);
+        }
+        /* Output report 0x10: rumble only, left then right actuator. */
+        pkt[0] = 0x10;
+        pkt[1] = dev->sw_counter++ & 0x0F;
+        switch_rumble_block(pkt + 2, s, w);
+        switch_rumble_block(pkt + 6, s, w);
+        r = usb_fs_send_packet(dev, pkt, sizeof pkt, 8);
+        if (r >= 0) dev->rum_sent_at = now;
+    } else if (!changed) {
+        return;
+    } else if (is_xbox_one) {
+        uint8_t pkt[13] = { 0x09, 0x00, dev->gip_seq++, 0x09, 0x00, 0x0F, 0x00, 0x00,
+                            (uint8_t)(s * 100 / 255), (uint8_t)(w * 100 / 255), 0xFF, 0x00, 0x00 };
+        r = usb_fs_send_packet(dev, pkt, sizeof pkt, 8);
+    } else if (dev->type == CTRL_XBOX_XINPUT || dev->type == CTRL_8BITDO_ADAPTER) {
+        uint8_t pkt[8] = { 0x00, 0x08, 0x00, s, w, 0x00, 0x00, 0x00 };
+        r = usb_fs_send_packet(dev, pkt, sizeof pkt, 8);
+    } else if (dev->type == CTRL_SONY_DS4) {
+        uint8_t pkt[32];
+        memset(pkt, 0, sizeof pkt);
+        pkt[0] = 0x05; pkt[1] = 0x01; pkt[4] = w; pkt[5] = s;
+        r = usb_fs_send_packet(dev, pkt, sizeof pkt, 8);
+    } else {
+        /* Unknown rumble format: never retry. */
+        dev->rum_sent_strong = s; dev->rum_sent_weak = w;
+        return;
+    }
+    if (r >= 0) { dev->rum_sent_strong = s; dev->rum_sent_weak = w; }
+}
+
 #endif /* __PROSPERO__ */
 
 static void *usb_reader_worker(void *arg)
@@ -325,36 +529,95 @@ static void *usb_reader_worker(void *arg)
     usb_slot_device_t *dev = (usb_slot_device_t *)arg;
     uint8_t report[256];
     pad_state_t st;
+    int guide_down = 0;
+    uint32_t prev_buttons = 0;
+    pad_state_neutral(&st);
     
     long last_data_time = now_ms();
     long last_led_time = 0;
     long last_log_t = 0;
     int consecutive_errors = 0;
+    const int use_ps_hold = (dev->type == CTRL_GAMESIR_G7PRO);
+    const long hold_timeout_ms = dev->stale_timeout_ms;
+    omni_ps_chord_hold_t ps_hold = {0};
+
+    /* Switch Pro (including 8BitDo Switch-emulation identity 057e:2009):
+     * read acknowledgements on the same endpoint used by the gamepad. */
+    #ifdef __PROSPERO__
+    static const uint8_t sw_commands[] = {0x01, 0x02, 0x03, 0x02, 0x04};
+    int sw_step = 0;
+    int sw_retries = 0;
+    long sw_sent_ms = 0;
+    const int is_switch = (dev->type == CTRL_NINTENDO_SWITCH_PRO);
+    #endif
 
     log_line("usb_hotplug: Reader thread started for slot %d (%s on %s)",
              dev->slot, dev->name, dev->dev_path);
 
 #ifdef __PROSPERO__
-    int is_xbox_one = (dev->type == CTRL_XBOX_XINPUT && dev->vid == 0x045e && dev->pid != 0x028e);
+    int is_xbox_one = dev->is_gip;
     int is_genuine_x360 = (dev->type == CTRL_XBOX_XINPUT && dev->vid == 0x045e && dev->pid == 0x028e);
     if (dev->use_fs && dev->has_out && is_xbox_one) {
-        static const uint8_t power_on[] = {0x05, 0x20, 0x00, 0x01, 0x00};
-        static const uint8_t s_init[] = {
-            0x05, 0x20, 0x00, 0x0f, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x55, 0x53, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-        };
-        static const uint8_t led_on[] = {0x0a, 0x20, 0x00, 0x03, 0x00, 0x01, 0x14};
+        uint8_t seq = 0;
+        uint8_t power_on[] = {0x05, 0x20, seq++, 0x01, 0x00};
         usb_fs_send_packet(dev, power_on, sizeof(power_on), 80);
         usleep(10000);
-        usb_fs_send_packet(dev, s_init, sizeof(s_init), 80);
-        usleep(10000);
+        if (dev->pid == 0x0b00 || dev->pid == 0x02ea) {
+            uint8_t s_init[] = {
+                0x05, 0x20, seq++, 0x0f, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x55, 0x53, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+            };
+            usb_fs_send_packet(dev, s_init, sizeof(s_init), 80);
+            usleep(10000);
+        }
+        uint8_t led_on[] = {0x0a, 0x20, seq++, 0x03, 0x00, 0x01, 0x14};
         usb_fs_send_packet(dev, led_on, sizeof(led_on), 80);
-        log_line("usb_hotplug: GIP power/s_init/led sent on slot %d", dev->slot);
+        usleep(10000);
+        uint8_t auth_done[] = {0x06, 0x20, seq++, 0x02, 0x01, 0x00};
+        usb_fs_send_packet(dev, auth_done, sizeof(auth_done), 80);
+        log_line("usb_hotplug: GIP power/init/led/auth sent on slot %d (pid 0x%04x)", dev->slot, dev->pid);
+    }
+    if (dev->use_fs && dev->has_out && dev->type == CTRL_NINTENDO_WIIU_GC_ADAPTER) {
+        /* The Wii U GameCube adapter stays silent until the host writes 0x13 on OUT. */
+        static const uint8_t gc_start[] = {0x13};
+        int r = usb_fs_send_packet(dev, gc_start, sizeof(gc_start), 80);
+        log_line("usb_hotplug: Wii U GC adapter start (0x13) sent on slot %d -> %d", dev->slot, r);
+    }
+    if (dev->use_fs && dev->has_out && dev->type == CTRL_XBOX_XINPUT && !is_xbox_one) {
+        /* XInput hosts set the player LED on the interrupt OUT endpoint right after
+         * connecting. Without it the 8BitDo Ultimate 2C stays silent and re-enumerates
+         * after a few seconds; the SET_REPORT handshake does not count. */
+        static const uint8_t led_p1[] = {0x01, 0x03, 0x02};
+        int r = usb_fs_send_packet(dev, led_p1, sizeof(led_p1), 80);
+        log_line("usb_hotplug: XInput player LED sent on OUT for slot %d -> %d", dev->slot, r);
     }
 #endif
 
     while (!dev->stop_thread) {
         long cur_time = now_ms();
+#ifdef __PROSPERO__
+        /* Send each Nintendo command from the reader thread, then wait for its
+         * 0x81 acknowledgement. A missing ACK triggers at most two resends.
+         * The last command (0x04 = USB HID without timeout) has no ACK. */
+        if (is_switch && sw_step < 5 &&
+            (sw_sent_ms == 0 || cur_time - sw_sent_ms >= 300)) {
+            if (sw_sent_ms != 0 && sw_retries >= 2) {
+                log_line("usb_hotplug: Switch handshake step %d no ACK, continuing", sw_step);
+                sw_step++;
+                sw_retries = 0;
+                sw_sent_ms = 0;
+            }
+            if (sw_step < 5) {
+                int ret = usb_nintendo_switch_send_cmd(dev->fd, sw_commands[sw_step]);
+                sw_sent_ms = cur_time ? cur_time : 1;
+                sw_retries++;
+                log_line("usb_hotplug: Switch handshake %d command %02x returned %d",
+                         sw_step, sw_commands[sw_step], ret);
+                if (sw_step == 4) sw_step = 5;
+            }
+        }
+#endif
+
 
 #ifdef __PROSPERO__
         /* Send periodic Player 1 LED / keepalive ONLY for genuine Microsoft Xbox 360 controller */
@@ -368,10 +631,11 @@ static void *usb_reader_worker(void *arg)
         int n = 0;
 #ifdef __PROSPERO__
         if (dev->use_fs) {
-            n = usb_fs_recv_packet(dev, report, sizeof(report), 15);
+            n = usb_fs_recv_packet(dev, report, sizeof(report), 0);
             if (n > 0 && is_xbox_one) {
                 ack_gip_packet(dev, report, n);
             }
+            usb_send_rumble(dev, is_xbox_one);
         }
 #else
         for (int i = 0; i < 6; i++) {
@@ -388,11 +652,51 @@ static void *usb_reader_worker(void *arg)
 
         if (n > 0) {
             consecutive_errors = 0;
-            int parsed = usb_parse_input_report(dev->type, report, (size_t)n, &st);
-            if (!parsed) {
-                parsed = usb_parse_input_report(CTRL_GENERIC_HID, report, (size_t)n, &st);
+#ifdef __PROSPERO__
+            if (is_switch && n >= 2 && report[0] == 0x81 &&
+                sw_step < 4 && report[1] == sw_commands[sw_step]) {
+                sw_step++;
+                sw_retries = 0;
+                sw_sent_ms = 0;
+                continue; /* This is a command acknowledgement, not input. */
+            }
+#endif
+
+            int parsed = 0;
+#ifdef __PROSPERO__
+            if (is_xbox_one) {
+                int gr = usb_parse_gip_report(report, (size_t)n, &st, &guide_down);
+                if (gr == 1 || gr == 2) {
+                    if (guide_down) st.buttons |= PAD_BTN_PS;
+                    else st.buttons &= ~PAD_BTN_PS;
+                    parsed = 1;
+                } else {
+                    /* Non-input GIP system/battery/ack frame - ignore without resetting st */
+                    usleep(250);
+                    continue;
+                }
+            } else
+#endif
+            {
+                parsed = usb_parse_input_report(dev->type, report, (size_t)n, &st);
+                if (!parsed && dev->type != CTRL_GAMESIR_G7PRO && dev->type != CTRL_GAMESIR_G7SE &&
+                    dev->type != CTRL_NINTENDO_SWITCH_PRO &&
+                    dev->type != CTRL_MADCATZ_SF4_FIGHTPAD &&
+                    dev->type != CTRL_THRUSTMASTER_T598 &&
+                    dev->type != CTRL_NINTENDO_WIIU_GC_ADAPTER) {
+                    parsed = usb_parse_input_report(CTRL_GENERIC_HID, report, (size_t)n, &st);
+                }
             }
             if (parsed) {
+                if (use_ps_hold) {
+                    if (vpad_is_live(dev->slot))
+                        omni_ps_hold_report(&ps_hold, &st, &st, cur_time, hold_timeout_ms);
+                    else {
+                        memset(&ps_hold, 0, sizeof(ps_hold));
+                        if ((st.buttons & (PAD_BTN_SHARE | PAD_BTN_OPTIONS)) == (PAD_BTN_SHARE | PAD_BTN_OPTIONS))
+                            st.buttons &= ~(PAD_BTN_SHARE | PAD_BTN_OPTIONS);
+                    }
+                }
                 st.conn_type = dev->conn_type;
                 st.vid = dev->vid;
                 st.pid = dev->pid;
@@ -400,12 +704,15 @@ static void *usb_reader_worker(void *arg)
                 /* If 2.4G dongle was in standby / slot freed, re-arm the virtual pad */
                 if (dev->conn_type == CONN_USB_DONGLE_24G && vpad_slot_is_free(dev->slot)) {
                     log_line("usb_hotplug: slot %d 2.4G controller active — re-arming virtual pad", dev->slot);
-                    vpad_add(dev->slot, dev->conn_type, dev->name);
+                    vpad_add_with_timeout(dev->slot, dev->conn_type, dev->name, dev->stale_timeout_ms);
                 }
-                vpad_update(dev->slot, &st);
+                if (use_ps_hold) vpad_update_level(dev->slot, &st);
+                else vpad_update(dev->slot, &st);
                 last_data_time = cur_time;
 
-                if (st.buttons != 0 && (cur_time - last_log_t > 300)) {
+                int btn_changed = (st.buttons != prev_buttons);
+                prev_buttons = st.buttons;
+                if (btn_changed || (st.buttons != 0 && (cur_time - last_log_t > 500))) {
                     last_log_t = cur_time;
                     log_line("usb_hotplug: slot %d button press 0x%08x (LX=%d LY=%d)",
                              dev->slot, (unsigned)st.buttons, st.lx, st.ly);
@@ -425,8 +732,12 @@ static void *usb_reader_worker(void *arg)
             }
         } else if (cur_time - last_data_time > 3000 && cur_time - last_log_t > 3000) {
             last_log_t = cur_time;
+#ifdef __PROSPERO__
             log_line("usb_hotplug: slot %d idle/standby (n=%d, use_fs=%d)",
                      dev->slot, n, dev->use_fs);
+#else
+            log_line("usb_hotplug: slot %d idle/standby (n=%d)", dev->slot, n);
+#endif
             /* If 2.4G dongle receives no packets for > 60 seconds (1 minute), release vpad to free user profile */
             if (dev->conn_type == CONN_USB_DONGLE_24G && (cur_time - last_data_time > 60000)) {
                 if (!vpad_slot_is_free(dev->slot)) {
@@ -436,7 +747,28 @@ static void *usb_reader_worker(void *arg)
             }
         }
 
+        if (use_ps_hold) {
+            if (!vpad_is_live(dev->slot)) {
+                memset(&ps_hold, 0, sizeof(ps_hold));
+            } else {
+                pad_state_t held;
+                if (omni_ps_hold_tick(&ps_hold, &held, now_ms(), hold_timeout_ms)) {
+                    held.conn_type = dev->conn_type;
+                    held.vid = dev->vid;
+                    held.pid = dev->pid;
+                    snprintf(held.controller_name, sizeof(held.controller_name), "%s", dev->name);
+                    vpad_update_cached_level(dev->slot, &held);
+                }
+            }
+        }
+
+#ifdef __PROSPERO__
+        /* Xbox GIP on USB_FS needs the fast re-arm tick (PR #17); every other
+         * device keeps the ~250 Hz polling tick (PR #19) to save CPU. */
+        usleep(is_xbox_one ? 250 : 4000);
+#else
         usleep(4000); /* ~250 Hz polling tick */
+#endif
     }
 
 
@@ -589,8 +921,10 @@ static void probe_usb_devices(void)
             sdev->vid = vid;
             sdev->pid = pid;
             sdev->type = ctype;
+            sdev->stale_timeout_ms = usb_controller_stale_timeout_ms(ctype);
             sdev->name = ctrl_name;
             sdev->stop_thread = 0;
+            sdev->small_motor = usb_read_small_motor(vid, pid);
 
 #ifdef __PROSPERO__
             if (!usb_fs_setup_device(sdev)) {
@@ -616,7 +950,8 @@ static void probe_usb_devices(void)
                                            strstr(ctrl_name, "Receiver") != NULL));
             sdev->conn_type = is_dongle ? CONN_USB_DONGLE_24G : CONN_USB_WIRED;
 
-            vpad_add(slot, sdev->conn_type, ctrl_name);
+            vpad_add_with_timeout(slot, sdev->conn_type, ctrl_name, sdev->stale_timeout_ms);
+            usb_apply_remap(slot, vid, pid);
             pthread_create(&sdev->thread, NULL, usb_reader_worker, sdev);
         }
     }
@@ -716,4 +1051,47 @@ void usb_hotplug_cleanup(void)
             memset(&g_usb_hotplug.devices[i], 0, sizeof(usb_slot_device_t));
         }
     }
+}
+
+/* ---- OmniPad extensions: identity, rumble, settings ---------------------- */
+
+int usb_hotplug_slot_ids(int slot, uint16_t *vid, uint16_t *pid)
+{
+    int ok = 0;
+    if (slot < 0 || slot >= MAX_SLOTS) return 0;
+    pthread_mutex_lock(&g_usb_hotplug.lock);
+    if (g_usb_hotplug.devices[slot].active) {
+        *vid = g_usb_hotplug.devices[slot].vid;
+        *pid = g_usb_hotplug.devices[slot].pid;
+        ok = 1;
+    }
+    pthread_mutex_unlock(&g_usb_hotplug.lock);
+    return ok;
+}
+
+int usb_hotplug_any(void)
+{
+    for (int i = 0; i < MAX_SLOTS; i++)
+        if (g_usb_hotplug.devices[i].active) return 1;
+    return 0;
+}
+
+void usb_hotplug_set_rumble(int slot, uint8_t strong, uint8_t weak)
+{
+    if (slot < 0 || slot >= MAX_SLOTS || !g_usb_hotplug.devices[slot].active) return;
+    /* Plain stores: the reader thread picks the pair up on its next tick. */
+    g_usb_hotplug.devices[slot].rum_strong = strong;
+    g_usb_hotplug.devices[slot].rum_weak = weak;
+}
+
+void usb_hotplug_reload_configs(void)
+{
+    pthread_mutex_lock(&g_usb_hotplug.lock);
+    for (int i = 0; i < MAX_SLOTS; i++) {
+        usb_slot_device_t *d = &g_usb_hotplug.devices[i];
+        if (!d->active) continue;
+        d->small_motor = usb_read_small_motor(d->vid, d->pid);
+        usb_apply_remap(i, d->vid, d->pid);
+    }
+    pthread_mutex_unlock(&g_usb_hotplug.lock);
 }

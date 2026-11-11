@@ -135,11 +135,11 @@ static void test_pipeline_switch_pro_to_abi(void)
     report[1] = 0x01; /* Timer */
     report[2] = 0x90; /* Battery full */
     
-    /* Byte 3: Switch B (0x01 -> Cross), L1 (0x40) */
-    report[3] = 0x01 | 0x40;
+    /* Byte 3: Switch B (0x04 -> Cross), R (0x40 -> R1) */
+    report[3] = 0x04 | 0x40;
     
-    /* Byte 4: Plus (0x01 -> Options), Home (0x10 -> PS) */
-    report[4] = 0x01 | 0x10;
+    /* Byte 4: Plus (0x02 -> Options), Home (0x10 -> PS) */
+    report[4] = 0x02 | 0x10;
     
     /* Byte 5: D-pad UP (0x02) */
     report[5] = 0x02;
@@ -163,12 +163,12 @@ static void test_pipeline_switch_pro_to_abi(void)
     int parsed = usb_parse_input_report(CTRL_NINTENDO_SWITCH_PRO, report, sizeof(report), &state);
     assert(parsed == 1);
     assert(state.buttons & PAD_BTN_CROSS);
-    assert(state.buttons & PAD_BTN_L1);
+    assert(state.buttons & PAD_BTN_R1);
     assert(state.buttons & PAD_BTN_OPTIONS);
     assert(state.buttons & PAD_BTN_PS);
     assert(state.buttons & PAD_DPAD_UP);
     assert(state.lx == 128); /* 2048 >> 4 = 128 */
-    assert(state.ly == 0);   /* 255 - (4095 >> 4) = 0 (full forward) */
+    assert(state.ly == 0); /* Switch forward becomes PS5 up. */
     assert(state.rx == 128);
     assert(state.ry == 128);
 
